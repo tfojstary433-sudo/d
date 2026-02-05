@@ -1,0 +1,82 @@
+require("dotenv").config();
+
+const { Client, GatewayIntentBits, Collection } = require("discord.js");
+const fs = require("fs");
+const path = require("path");
+
+// 🔎 Debug tokena (opcjonalne – usuń po sprawdzeniu)
+console.log("DISCORD_TOKEN:", process.env.DISCORD_TOKEN);
+console.log("TOKEN LENGTH:", process.env.DISCORD_TOKEN?.length);
+
+// 🤖 Klient Discorda
+const client = new Client({
+    intents: [GatewayIntentBits.Guilds],
+});
+
+client.commands = new Collection();
+
+// 📂 Ładowanie komend
+const commandsPath = path.join(__dirname, "commands");
+
+if (!fs.existsSync(commandsPath)) {
+    console.error("❌ Folder 'commands' nie istnieje!");
+    process.exit(1);
+}
+
+const commandFiles = fs
+    .readdirSync(commandsPath)
+    .filter(file => file.endsWith(".js"));
+
+for (const file of commandFiles) {
+    const filePath = path.join(commandsPath, file);
+    const command = require(filePath);
+
+    if (!command.data || !command.execute) {
+        console.error(`❌ BŁĄD: ${file} nie posiada 'data' lub 'execute'`);
+        continue;
+    }
+
+    client.commands.set(command.data.name, command);
+    console.log(`✅ Załadowano komendę: ${command.data.name}`);
+}
+
+// ⚡ Obsługa Slash Commands
+client.on("interactionCreate", async interaction => {
+    if (!interaction.isChatInputCommand()) return;
+
+    const command = client.commands.get(interaction.commandName);
+    if (!command) {
+        console.warn(`⚠️ Nie znaleziono komendy: ${interaction.commandName}`);
+        return;
+    }
+
+    try {
+        await command.execute(interaction);
+    } catch (error) {
+        console.error(error);
+
+        const errorMessage = {
+            content: "❌ Wystąpił błąd podczas wykonywania komendy!",
+            ephemeral: true,
+        };
+
+        if (interaction.replied || interaction.deferred) {
+            await interaction.followUp(errorMessage);
+        } else {
+            await interaction.reply(errorMessage);
+        }
+    }
+});
+
+// ✅ Gotowość bota
+client.once("ready", () => {
+    console.log(`🤖 Zalogowano jako ${client.user.tag}`);
+});
+
+// 🚀 Logowanie
+if (!process.env.DISCORD_TOKEN) {
+    console.error("❌ Brak DISCORD_TOKEN w pliku .env");
+    process.exit(1);
+}
+
+client.login(process.env.DISCORD_TOKEN);

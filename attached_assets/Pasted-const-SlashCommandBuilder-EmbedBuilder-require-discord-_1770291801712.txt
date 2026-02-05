@@ -1,0 +1,177 @@
+const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
+const axios = require("axios");
+
+const API_URL =
+  "https://2cc8fdff-58f5-4de4-ba18-23c3c389e63d-00-10zd3s5b89sgn.janeway.replit.dev/api/match/info";
+
+const TOURNAMENT_API =
+  "https://2cc8fdff-58f5-4de4-ba18-23c3c389e63d-00-10zd3s5b89sgn.janeway.replit.dev/api/tournament/1";
+
+const TARGET_GUILD_ID = "1464915396137324854";
+const TARGET_CHANNEL_ID = "1464915485228404879";
+
+/* ===== FORMAT DATY ===== */
+function formatDate(dateString) {
+  if (!dateString) return "N/A";
+
+  const d = new Date(dateString);
+  if (isNaN(d)) return "N/A";
+
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  const hh = String(d.getHours()).padStart(2, "0");
+  const min = String(d.getMinutes()).padStart(2, "0");
+
+  return `${dd}.${mm}.${yyyy} ${hh}:${min}`;
+}
+
+module.exports = {
+  data: new SlashCommandBuilder()
+    .setName("info")
+    .setDescription("Ustaw sędziów i wykluczonych zawodników")
+    .addStringOption(o =>
+      o.setName("liga")
+        .setDescription("Wybierz ligę")
+        .setRequired(true)
+        .addChoices(
+          { name: "Ekstraklasa", value: "ekstraklasa" },
+          { name: "Mecze Towarzyskie 25/26 PFF", value: "turniej" }
+        )
+    )
+    .addStringOption(o =>
+      o.setName("uuid")
+        .setDescription("UUID meczu / fixture")
+        .setRequired(true)
+    )
+    .addStringOption(o => o.setName("glowny").setDescription("Sędzia główny"))
+    .addStringOption(o => o.setName("asystent1").setDescription("Asystent 1"))
+    .addStringOption(o => o.setName("asystent2").setDescription("Asystent 2"))
+    .addStringOption(o => o.setName("techniczny").setDescription("Sędzia techniczny"))
+    .addStringOption(o => o.setName("var").setDescription("Sędzia VAR"))
+    .addStringOption(o => o.setName("avar").setDescription("Asystent VAR"))
+    .addStringOption(o =>
+      o.setName("wykluczeni")
+        .setDescription("Format: Nick:Powód, Nick2:Powód2")
+    ),
+
+  async execute(interaction) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const liga = interaction.options.getString("liga");
+    const inputUuid = interaction.options.getString("uuid");
+
+    const referees = {
+      main: interaction.options.getString("glowny"),
+      assistant1: interaction.options.getString("asystent1"),
+      assistant2: interaction.options.getString("asystent2"),
+      fourth: interaction.options.getString("techniczny"),
+      var: interaction.options.getString("var"),
+      avar: interaction.options.getString("avar"),
+    };
+
+    Object.keys(referees).forEach(k => {
+      if (!referees[k]) delete referees[k];
+    });
+
+    let excludedPlayers = [];
+    const excludedRaw = interaction.options.getString("wykluczeni");
+    if (excludedRaw) {
+      excludedPlayers = excludedRaw
+        .split(",")
+        .map(e => {
+          const [name, reason] = e.split(":");
+          return {
+            name: name?.trim(),
+            reason: reason?.trim() || "Brak powodu"
+          };
+        })
+        .filter(e => e.name);
+    }
+
+    let uuid = inputUuid;
+    let fixtureInfo = null;
+
+    try {
+      /* ===== TURNIEJ ===== */
+      if (liga === "turniej") {
+        const tRes = await axios.get(TOURNAMENT_API);
+
+        fixtureInfo = tRes.data.fixtures?.find(f =>
+          f.uuid === inputUuid ||
+          f.matchUuid === inputUuid ||
+          f.id === Number(inputUuid)
+        );
+
+        if (!fixtureInfo) {
+          return interaction.editReply("❌ Nie znaleziono fixture.");
+        }
+
+        uuid = fixtureInfo.matchUuid || null;
+
+        await axios.post(
+          "https://2cc8fdff-58f5-4de4-ba18-23c3c389e63d-00-10zd3s5b89sgn.janeway.replit.dev/api/tournament/fixture/info",
+          {
+            fixtureUuid: fixtureInfo.uuid,
+            tournamentId: 1,
+            referees,
+            excludedPlayers
+          }
+        );
+      }
+
+      /* ===== EKSTRAKLASA ===== */
+      if (uuid) {
+        await axios.post(API_URL, { uuid, referees, excludedPlayers });
+      }
+
+      /* ===== DATA Z REPLITA ===== */
+      const formattedDate = formatDate(fixtureInfo?.date);
+
+      /* ===== EMBED 1:1 JAK NA SCREENIE ===== */
+      const embed = new EmbedBuilder()
+        .setColor(0xf1c40f)
+        .setTitle(`${fixtureInfo?.teamA || "?"} - ${fixtureInfo?.teamB || "?"}`)
+        .setDescription("Otrzymano nową obsadę:\n")
+        .addFields(
+          {
+            name: "Miejsce",
+            value: fixtureInfo?.venue || "Ośrodek Treningowy",
+            inline: false
+          },
+          {
+            name: "Data",
+            value: formattedDate,
+            inline: false
+          },
+          {
+            name: "\u200B",
+            value:
+              `Sędzia Główny: ${referees.main || "N/A"}\n` +
+              `Sędzia Asystent 1: ${referees.assistant1 || "N/A"}\n` +
+              `Sędzia Asystent 2: ${referees.assistant2 || "N/A"}\n` +
+              `Sędzia VAR: ${referees.var || "N/A"}\n` +
+              `Sędziowie AVAR: ${referees.avar || "N/A"}\n` +
+              `Sędzia Techniczny: ${referees.fourth || "N/A"}`
+          }
+        )
+        .setTimestamp();
+
+      /* ===== WYSYŁKA NA INNY SERWER ===== */
+      const guild = await interaction.client.guilds.fetch(TARGET_GUILD_ID);
+      const channel = await guild.channels.fetch(TARGET_CHANNEL_ID);
+
+      if (!channel || !channel.isTextBased()) {
+        throw new Error("Kanał docelowy nie jest tekstowy");
+      }
+
+      await channel.send({ embeds: [embed] });
+
+      await interaction.editReply("✅ Informacje zapisane i wysłane.");
+
+    } catch (err) {
+      console.error(err);
+      await interaction.editReply(`❌ Błąd: ${err.message}`);
+    }
+  }
+};

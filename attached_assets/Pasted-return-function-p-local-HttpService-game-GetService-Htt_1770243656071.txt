@@ -1,0 +1,89 @@
+return function(p)
+	local HttpService = game:GetService("HttpService")
+	local em = game.ReplicatedStorage.Events.EndMatch
+	local uie = game.ReplicatedStorage.Events.SetFootballUI
+	local mval = game.ReplicatedStorage.Values.Match
+	local m = require(game.ReplicatedStorage.Modules.Match)
+	local BACKEND_URL = "https://2cc8fdff-58f5-4de4-ba18-23c3c389e63d-00-10zd3s5b89sgn.janeway.replit.dev"
+
+	em:FireAllClients()
+	uie:FireAllClients("Match", false)
+
+	local matchUUID = m.UUID
+	local isOfficial = m.officialmatch
+	local homeScore = m.homeScore or 0
+	local awayScore = m.awayScore or 0
+	local currentTime = m.currentTime or 0  -- POBIERZ AKTUALNY CZAS
+	local finalMinute = math.floor(currentTime / 60)
+
+	print("[EndMatch] ===== KONIEC MECZU =====")
+	print("[EndMatch] UUID: " .. tostring(matchUUID))
+	print("[EndMatch] Koncowa minuta: " .. finalMinute)
+
+	if matchUUID and isOfficial then
+		task.spawn(function()
+			local ok, res = pcall(function()
+				return HttpService:PostAsync(
+					BACKEND_URL .. "/api/match/players/finalize",
+					HttpService:JSONEncode({
+						matchUuid = matchUUID,
+						finalMinute = finalMinute,
+						tournamentId = 1,
+						tournamentName = "Mecze Towarzyskie 25/26 PFF"
+					}),
+					Enum.HttpContentType.ApplicationJson
+				)
+			end)
+			if ok then
+				print("[EndMatch] Minuty zapisane! Response:", res)
+			else
+				warn("[EndMatch] Blad zapisu minut:", res)
+			end
+		end)
+	end
+
+	m.UUID = nil
+	m.officialmatch = false
+
+	if matchUUID and isOfficial then
+		task.spawn(function()
+			local ok, res = pcall(function()
+				return HttpService:PostAsync(
+					BACKEND_URL .. "/api/match/end",
+					HttpService:JSONEncode({
+						uuid = matchUUID,
+						teamAScore = homeScore,
+						teamBScore = awayScore
+					}),
+					Enum.HttpContentType.ApplicationJson
+				)
+			end)
+			if ok then
+				print("[EndMatch] Mecz zakończony:", matchUUID, "Wynik:", homeScore, "-", awayScore)
+			else
+				warn("[EndMatch] Błąd:", res)
+			end
+		end)
+	else
+		print("[EndMatch] Mecz nieoficjalny lub brak UUID")
+	end
+
+	mval.Value = false
+	game.ReplicatedStorage.MatchValues.HomeTeam.Value = ""
+	game.ReplicatedStorage.MatchValues.AwayTeam.Value = ""
+
+	local matchUI = game.StarterGui.MatchUI
+	matchUI.Enabled = false
+	matchUI.Frame.Team1_Score.Text = "0"
+	matchUI.Frame.Team2_Score.Text = "0"
+	matchUI.Frame.Timer.Text = "00:00"
+	matchUI.Frame.Added.Position = UDim2.new(0.141, 0, 0.43, 0)
+	matchUI.Frame.Added.Visible = false
+
+	local screen = workspace.Ekran.SurfaceGui
+	screen.Enabled = false
+	screen.Frame.HomeScore.Text = "0"
+	screen.Frame.AwayScore.Text = "0"
+	screen.Frame.Timer.Text = "00:00"
+	return "success"
+end

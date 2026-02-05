@@ -1,0 +1,466 @@
+local PhysicsService = game:GetService("PhysicsService")
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local TeamsService = game:GetService("Teams")
+
+local BACKEND_URL = "https://2cc8fdff-58f5-4de4-ba18-23c3c389e63d-00-10zd3s5b89sgn.janeway.replit.dev"
+
+print("[INIT] PlayerHandler loading...")
+
+local sm = game.ReplicatedStorage.Events.StartMatch
+local em = game.ReplicatedStorage.Events.EndMatch
+local t = game.ReplicatedStorage.Events.Time
+local s = game.ReplicatedStorage.Events.Score
+local uie = game.ReplicatedStorage.Events.SetFootballUI
+
+local tms = require(script.Parent.Modules.Teams)
+local mval = game.ReplicatedStorage.Values.Match
+local lbval = game.ReplicatedStorage.Values.Lockballs
+local Kits = require(game.ReplicatedStorage.Modules.Tms)
+
+print("[INIT] Modules loaded")
+
+local adm = {"2115xDeathZ2115"}
+
+local currentMatchUUID = ""
+local currentTime = 0
+local maxTime = 0
+local timerActive = false
+local currentHomeTeam = ""
+local currentAwayTeam = ""
+local currentHomeTeamId = ""
+local currentAwayTeamId = ""
+local currentHomeScore = 0
+local currentAwayScore = 0
+local currentPeriod = "Pierwsza połowa"
+local currentAddedTime = 0
+local isBreak = false
+local breakTime = 0
+local timerLoopRunning = false
+local isTournamentMatch = false
+local tournamentId = 1
+local tournamentName = "Mecze Towarzyskie 25/26 PFF"
+
+local playersOnPitch = {}
+local currentLineupA = {}
+local currentLineupB = {}
+
+local sowner = nil
+
+local function getOrCreateTeam(teamName, color)
+	local team = TeamsService:FindFirstChild(teamName)
+	if team then return team end
+	team = Instance.new("Team")
+	team.Name = teamName
+	team.AutoAssignable = false
+	team.TeamColor = color or BrickColor.Random()
+	team.Parent = TeamsService
+	return team
+end
+
+local function ensureObserversTeam()
+	local obs = TeamsService:FindFirstChild("Obserwatorzy")
+	if obs then return obs end
+	obs = Instance.new("Team")
+	obs.Name = "Obserwatorzy"
+	obs.AutoAssignable = false
+	obs.TeamColor = BrickColor.new("Institutional white")
+	obs.Parent = TeamsService
+	return obs
+end
+
+local function movePlayersToObservers(teamName)
+	local obs = ensureObserversTeam()
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr.Team and plr.Team.Name == teamName then
+			plr.Team = obs
+		end
+	end
+end
+
+local function removeTeam(teamName)
+	local team = TeamsService:FindFirstChild(teamName)
+	if team then team:Destroy() end
+end
+
+local function findPlayerByShortcut(shortcut)
+	if not shortcut or shortcut == "" then return nil end
+	shortcut = shortcut:lower()
+	for _, player in ipairs(Players:GetPlayers()) do
+		if string.sub(player.Name:lower(), 1, #shortcut) == shortcut then
+			return player
+		end
+	end
+	return nil
+end
+
+local function hasPermission(plr)
+	if game.PrivateServerId ~= "" and plr.UserId == game.PrivateServerOwnerId then return true end
+	return table.find(adm, plr.Name) or (plr.Team and plr.Team.Name == "Sędziowie")
+end
+
+local function getTeam(query)
+	if not query or query == "" then return nil end
+	local upperQuery = query:upper()
+	if tms[upperQuery] then return upperQuery end
+	for abbr, data in pairs(tms) do
+		local name = data.fullName or data.fullname
+		if name and string.find(name:lower(), query:lower(), 1, true) then return abbr end
+	end
+	return nil
+end
+
+local function formatTime(seconds)
+	return string.format("%02d:%02d", math.floor(seconds / 60), seconds % 60)
+end
+
+local function getCurrentMinute()
+	return math.floor(currentTime / 60)
+end
+
+local function sendToBackend(endpoint, data)
+	local success, result = pcall(function()
+		return HttpService:PostAsync(BACKEND_URL .. endpoint, HttpService:JSONEncode(data), Enum.HttpContentType.ApplicationJson)
+	end)
+	if success then
+		print("[API OK] " .. endpoint .. " - Response: " .. tostring(result))
+	else
+		warn("[API ERR] " .. endpoint .. ": " .. tostring(result))
+	end
+	return success, result
+end
+
+local function getFromBackend(endpoint)
+	local success, result = pcall(function()
+		return HttpService:GetAsync(BACKEND_URL .. endpoint)
+	end)
+	if success then
+		print("[API GET OK] " .. endpoint)
+	else
+		warn("[API GET ERR] " .. endpoint .. ": " .. tostring(result))
+	end
+	return success, result
+end
+
+-- ========== ŚLEDZENIE MINUT GRACZY ==========
+
+local function registerPlayerFromLineup(robloxId, robloxNick, team, minute)
+	if not currentMatchUUID or currentMatchUUID == "" then return end
+
+	playersOnPitch[robloxId] = {
+		name = robloxNick,
+		team = team,
+		enteredAt = minute or 0
+	}
+
+	task.spawn(function()
+		sendToBackend("/api/match/player/enter", {
+			matchUuid = currentMatchUUID,
+			robloxId = robloxId,
+			robloxNick = robloxNick,
+			team = team,
+			minute = minute or 0
+		})
+	end)
+
+	print("[MINUTY] " .. robloxNick .. " (ID:" .. tostring(robloxId) .. ") wszedł w " .. (minute or 0) .. "' - " .. team)
+end
+
+local function registerLineupPlayers()
+	if not currentMatchUUID or currentMatchUUID == "" then 
+		print("[MINUTY] Brak aktywnego meczu")
+		return 
+	end
+
+	local count = 0
+
+	for _, player in ipairs(currentLineupA) do
+		if player.id and player.name then
+			registerPlayerFromLineup(player.id, player.name, "home", 0)
+			count = count + 1
+		end
+	end
+
+	for _, player in ipairs(currentLineupB) do
+		if player.id and player.name then
+			registerPlayerFromLineup(player.id, player.name, "away", 0)
+			count = count + 1
+		end
+	end
+
+	print("[MINUTY] Zarejestrowano " .. count .. " graczy ze składu")
+end
+
+local function playerExitById(robloxId, minute)
+	if not currentMatchUUID or currentMatchUUID == "" then return end
+	if not playersOnPitch[robloxId] then return end
+
+	local playerData = playersOnPitch[robloxId]
+	playersOnPitch[robloxId] = nil
+
+	task.spawn(function()
+		sendToBackend("/api/match/player/exit", {
+			matchUuid = currentMatchUUID,
+			robloxId = robloxId,
+			minute = minute or getCurrentMinute()
+		})
+	end)
+
+	print("[MINUTY] " .. playerData.name .. " zszedł w " .. (minute or getCurrentMinute()) .. "'")
+end
+
+local function playerEnterById(robloxId, robloxNick, team, minute)
+	registerPlayerFromLineup(robloxId, robloxNick, team, minute or getCurrentMinute())
+end
+
+local function finalizePlayerTracking()
+	if not currentMatchUUID or currentMatchUUID == "" then return end
+
+	local finalMinute = getCurrentMinute()
+	print("[MINUTY] Finalizacja - końcowa minuta: " .. finalMinute)
+
+	task.spawn(function()
+		local ok, res = sendToBackend("/api/match/players/finalize", {
+			matchUuid = currentMatchUUID,
+			finalMinute = finalMinute,
+			tournamentId = tournamentId,
+			tournamentName = tournamentName
+		})
+
+		if ok then
+			print("[MINUTY] Zapisano minuty wszystkich graczy")
+		end
+	end)
+
+	playersOnPitch = {}
+end
+
+local function findPlayerInLineup(shortcut, lineup)
+	if not shortcut or shortcut == "" then return nil end
+	shortcut = shortcut:lower()
+	for _, p in ipairs(lineup) do
+		if p.name and string.sub(p.name:lower(), 1, #shortcut) == shortcut then
+			return p
+		end
+	end
+	return nil
+end
+
+-- ========== KONIEC ŚLEDZENIA MINUT ==========
+
+local function updateUITimer()
+	local timerStr = isBreak and ("PRZERWA " .. formatTime(breakTime)) or formatTime(currentTime)
+	t:FireAllClients(currentTime, math.floor(currentAddedTime / 60))
+end
+
+local function startTimerSync()
+	if timerLoopRunning then return end
+	timerLoopRunning = true
+	task.spawn(function()
+		while mval.Value == true do
+			task.wait(1)
+			if isBreak then
+				if breakTime > 0 then breakTime = breakTime - 1 end
+			elseif timerActive then
+				if currentTime < maxTime then currentTime = currentTime + 1 end
+			end
+			if isTournamentMatch and currentMatchUUID ~= "" and currentTime % 5 == 0 then
+				task.spawn(function()
+					sendToBackend("/api/match/sync", {
+						uuid = currentMatchUUID,
+						teamAName = currentHomeTeam, teamAScore = currentHomeScore,
+						teamBName = currentAwayTeam, teamBScore = currentAwayScore,
+						timer = formatTime(currentTime), period = currentPeriod,
+						addedTime = currentAddedTime, active = timerActive
+					})
+				end)
+			end
+			updateUITimer()
+		end
+		timerLoopRunning = false
+	end)
+end
+
+local function handleGoal(team, playerName)
+	if team == "home" then currentHomeScore = currentHomeScore + 1
+	else currentAwayScore = currentAwayScore + 1 end
+	local minute = getCurrentMinute()
+	if isTournamentMatch and currentMatchUUID ~= "" then
+		sendToBackend("/api/match/event", {
+			uuid = currentMatchUUID, type = "goal",
+			data = { team = (team == "home") and "A" or "B", player = playerName, minute = minute, scoreA = currentHomeScore, scoreB = currentAwayScore }
+		})
+	end
+	s:FireAllClients(currentHomeScore, currentAwayScore)
+	print("[GOAL] " .. playerName .. " (" .. team .. ") - " .. currentHomeScore .. ":" .. currentAwayScore)
+end
+
+print("[INIT] Functions defined")
+
+game.ReplicatedStorage.Events.TPData.OnServerEvent:Connect(function(p, owner)
+	sowner = owner
+end)
+
+Players.PlayerAdded:Connect(function(plr)
+	print("[PLAYER] " .. plr.Name .. " joined")
+
+	local folder = Instance.new("Folder")
+	folder.Name = plr.Name
+	folder.Parent = workspace.Balls
+
+	plr.Chatted:Connect(function(msg)
+		local args = string.split(msg, " ")
+		local command = args[1]:lower()
+		local a1, a2, a3 = args[2], args[3], args[4]
+
+		print("[CMD] " .. plr.Name .. ": " .. command)
+
+		if command == ":pb" then
+			if lbval.Value and plr.Team and plr.Team.Name ~= "Sędziowie" then return end
+			local plrfolder = workspace.Balls:FindFirstChild(plr.Name)
+			if plrfolder and plrfolder:FindFirstChild("Ball") then plrfolder.Ball:Destroy() end
+			local ball = game.ServerStorage.Ball:Clone()
+			ball.Parent = plrfolder
+			ball.Position = plr.Character.HumanoidRootPart.Position
+
+
+		elseif command == ":goal" then
+			if not hasPermission(plr) then return end
+			local team = nil
+			if a1 == "home" or a1 == "1" then team = "home"
+			elseif a1 == "away" or a1 == "2" then team = "away" end
+
+			if team and a2 then
+				local targetPlayer = findPlayerByShortcut(a2)
+				if targetPlayer then 
+					handleGoal(team, targetPlayer.Name) 
+				else
+					print("[GOAL] Gracz nie znaleziony: " .. a2)
+				end
+			end
+
+		elseif command == ":owngoal" then
+			if not hasPermission(plr) then return end
+			local team = nil
+			if a1 == "home" or a1 == "1" then team = "away"
+			elseif a1 == "away" or a1 == "2" then team = "home" end
+
+			if team and a2 then
+				local targetPlayer = findPlayerByShortcut(a2)
+				if targetPlayer then 
+					if team == "home" then currentHomeScore = currentHomeScore + 1
+					else currentAwayScore = currentAwayScore + 1 end
+
+					if isTournamentMatch and currentMatchUUID ~= "" then
+						sendToBackend("/api/match/event", {
+							uuid = currentMatchUUID, type = "own_goal",
+							data = { team = (a1 == "home" or a1 == "1") and "A" or "B", player = targetPlayer.Name, minute = getCurrentMinute(), scoreA = currentHomeScore, scoreB = currentAwayScore }
+						})
+					end
+					s:FireAllClients(currentHomeScore, currentAwayScore)
+					print("[OWN GOAL] " .. targetPlayer.Name .. " - " .. currentHomeScore .. ":" .. currentAwayScore)
+				end
+			end
+
+		elseif command == ":yellow" then
+			if not hasPermission(plr) then return end
+			if a2 and isTournamentMatch then
+				local targetPlayer = findPlayerByShortcut(a2)
+				if targetPlayer then
+					local teamArg = (a1 == "home" or a1 == "1") and "A" or "B"
+					sendToBackend("/api/match/event", {
+						uuid = currentMatchUUID,
+						type = "yellow_card",
+						data = { team = teamArg, player = targetPlayer.Name, minute = getCurrentMinute() }
+					})
+					print("[YELLOW] " .. targetPlayer.Name)
+				end
+			end
+
+		elseif command == ":red" then
+			if not hasPermission(plr) then return end
+			if a2 and isTournamentMatch then
+				local targetPlayer = findPlayerByShortcut(a2)
+				if targetPlayer then
+					local teamArg = (a1 == "home" or a1 == "1") and "A" or "B"
+					sendToBackend("/api/match/event", {
+						uuid = currentMatchUUID,
+						type = "red_card",
+						data = { team = teamArg, player = targetPlayer.Name, minute = getCurrentMinute() }
+					})
+					print("[RED] " .. targetPlayer.Name)
+				end
+			end
+
+		elseif command == ":zmiana" then
+			if not hasPermission(plr) then return end
+			if a2 and a3 and isTournamentMatch then
+				local teamArg = (a1 == "home" or a1 == "1") and "A" or "B"
+				local teamType = (a1 == "home" or a1 == "1") and "home" or "away"
+				local lineup = (teamType == "home") and currentLineupA or currentLineupB
+
+				local outPlayer = findPlayerInLineup(a2, lineup)
+				local inPlayerGame = findPlayerByShortcut(a3)
+
+				local currentMin = getCurrentMinute()
+				print("[ZMIANA] Minuta: " .. currentMin .. ", Out: " .. a2 .. ", In: " .. a3)
+
+				if outPlayer then
+					playerExitById(outPlayer.id, currentMin)
+				else
+					print("[ZMIANA] Nie znaleziono gracza wychodzącego w składzie: " .. a2)
+				end
+
+				if inPlayerGame then
+					playerEnterById(inPlayerGame.UserId, inPlayerGame.Name, teamType, currentMin)
+
+					sendToBackend("/api/match/event", {
+						uuid = currentMatchUUID, type = "substitution",
+						data = { 
+							team = teamArg, 
+							out = outPlayer and outPlayer.name or a2, 
+							in_player = inPlayerGame.Name, 
+							minute = currentMin 
+						}
+					})
+					print("[SUB] " .. (outPlayer and outPlayer.name or a2) .. " -> " .. inPlayerGame.Name .. " w " .. currentMin .. "'")
+				else
+					print("[ZMIANA] Nie znaleziono gracza wchodzącego: " .. a3)
+				end
+			end
+
+
+		elseif command == ":polowa" then
+			if not hasPermission(plr) then return end
+			if a1 == "1" then 
+				currentPeriod = "Pierwsza połowa"
+				maxTime = 20 * 60
+				currentTime = 0
+			elseif a1 == "2" then 
+				currentPeriod = "Druga połowa"
+				maxTime = 40 * 60
+				currentTime = 20 * 60
+			end
+			timerActive = false
+			updateUITimer()
+			print("[TIME] Period: " .. currentPeriod)
+
+		elseif command == ":setscore" then
+			if not hasPermission(plr) then return end
+			currentHomeScore = tonumber(a1) or 0
+			currentAwayScore = tonumber(a2) or 0
+			s:FireAllClients(currentHomeScore, currentAwayScore)
+			print("[SCORE] Set to " .. currentHomeScore .. ":" .. currentAwayScore)
+
+	
+end
+	end)
+end)
+
+Players.PlayerRemoving:Connect(function(plr)
+	local plrfolder = workspace.Balls:FindFirstChild(plr.Name)
+	if plrfolder then plrfolder:Destroy() end
+end)
+
+print("[INIT] PlayerHandler ready!")
+print("[INIT] Backend URL: " .. BACKEND_URL)

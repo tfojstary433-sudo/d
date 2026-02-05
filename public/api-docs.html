@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ScoreSync API Documentation</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { 
+      font-family: 'Segoe UI', system-ui, sans-serif; 
+      background: #0a0a0a; 
+      color: #e0e0e0; 
+      padding: 20px;
+      line-height: 1.6;
+    }
+    h1 { color: #84cc16; margin-bottom: 20px; }
+    h2 { color: #84cc16; margin: 30px 0 15px; border-bottom: 1px solid #333; padding-bottom: 10px; }
+    h3 { color: #fff; margin: 20px 0 10px; }
+    .endpoint { 
+      background: #1a1a1a; 
+      border: 1px solid #333; 
+      border-radius: 8px; 
+      padding: 15px; 
+      margin: 10px 0;
+    }
+    .method { 
+      display: inline-block; 
+      padding: 4px 10px; 
+      border-radius: 4px; 
+      font-weight: bold; 
+      font-size: 12px;
+      margin-right: 10px;
+    }
+    .get { background: #22c55e; color: #000; }
+    .post { background: #3b82f6; color: #fff; }
+    .path { color: #84cc16; font-family: monospace; font-size: 14px; }
+    .desc { color: #888; margin-top: 8px; font-size: 14px; }
+    .json-link { 
+      display: inline-block;
+      margin-top: 10px;
+      color: #84cc16;
+      text-decoration: none;
+      font-size: 12px;
+    }
+    .json-link:hover { text-decoration: underline; }
+    .category { margin-bottom: 40px; }
+  </style>
+</head>
+<body>
+  <h1>🏆 ScoreSync API Documentation</h1>
+  <p style="color:#888;margin-bottom:30px;">Wszystkie endpointy API systemu zarządzania meczami piłkarskimi</p>
+
+  <div class="category">
+    <h2>📋 Mecze</h2>
+    
+    <div class="endpoint">
+      <span class="method post">POST</span>
+      <span class="path">/api/match/start</span>
+      <div class="desc">Rozpocznij nowy mecz (body: { teamA, teamB })</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method post">POST</span>
+      <span class="path">/api/match/end</span>
+      <div class="desc">Zakończ mecz (body: { uuid })</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method post">POST</span>
+      <span class="path">/api/match/sync</span>
+      <div class="desc">Synchronizuj stan meczu z Roblox (body: { uuid, teamAScore, teamBScore, timer, period, addedTime })</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method post">POST</span>
+      <span class="path">/api/match/event</span>
+      <div class="desc">Dodaj event meczu - gol, kartka, zmiana (body: { uuid, type, data })</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method post">POST</span>
+      <span class="path">/api/match/info</span>
+      <div class="desc">Ustaw składy, sędziów, wykluczonych graczy (body: { uuid, lineups?, referees?, excludedPlayers? })</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/matches</span>
+      <div class="desc">Pobierz wszystkie mecze</div>
+      <a href="/api/matches" target="_blank" class="json-link">📄 Zobacz JSON</a>
+    </div>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/matches/:uuid</span>
+      <div class="desc">Pobierz szczegóły meczu po UUID</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/match/:uuid/info.json</span>
+      <div class="desc">Pobierz informacje o meczu w JSON (składy, sędziowie)</div>
+    </div>
+  </div>
+
+  <div class="category">
+    <h2>🏆 Turnieje</h2>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/tournaments</span>
+      <div class="desc">Pobierz wszystkie turnieje</div>
+      <a href="/api/tournaments" target="_blank" class="json-link">📄 Zobacz JSON</a>
+    </div>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/tournament/:id</span>
+      <div class="desc">Pobierz szczegóły turnieju (grupy, fixtures, tabele)</div>
+      <a href="/api/tournament/1" target="_blank" class="json-link">📄 Zobacz JSON (ID=1)</a>
+    </div>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/tournament/:id.json</span>
+      <div class="desc">Pobierz turniej w formacie JSON (do embedowania)</div>
+      <a href="/api/tournament/1.json" target="_blank" class="json-link">📄 Zobacz JSON (ID=1)</a>
+    </div>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/tournament/:id/fixtures</span>
+      <div class="desc">Pobierz listę UUID fixtures turnieju (dla Discord bota)</div>
+      <a href="/api/tournament/1/fixtures" target="_blank" class="json-link">📄 Zobacz JSON (ID=1)</a>
+    </div>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/tournament/:id/scorers</span>
+      <div class="desc">Pobierz klasyfikację strzelców turnieju</div>
+      <a href="/api/tournament/1/scorers" target="_blank" class="json-link">📄 Zobacz JSON (ID=1)</a>
+    </div>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/tournament/:id/referees</span>
+      <div class="desc">Pobierz historię sędziów turnieju - kto sędziował jakie mecze</div>
+      <a href="/api/tournament/1/referees" target="_blank" class="json-link">📄 Zobacz JSON (ID=1)</a>
+    </div>
+
+    <div class="endpoint" style="border-color: #84cc16;">
+      <span class="method get">GET</span>
+      <span class="path">/api/tournament/:id/referees.json</span>
+      <div class="desc">📡 <strong>Publiczne API</strong> - Historia sędziów turnieju do embedowania (CORS enabled)</div>
+      <a href="/api/tournament/1/referees.json" target="_blank" class="json-link">📄 Zobacz JSON (ID=1)</a>
+    </div>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/tournament/:id/token</span>
+      <div class="desc">Pobierz token turnieju</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method post">POST</span>
+      <span class="path">/api/tournament/create</span>
+      <div class="desc">Utwórz nowy turniej (body: { name, season, groups })</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method post">POST</span>
+      <span class="path">/api/tournament/:id/update</span>
+      <div class="desc">Aktualizuj turniej</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method post">POST</span>
+      <span class="path">/api/tournament/:id/generate-token</span>
+      <div class="desc">Wygeneruj nowy token turnieju</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method post">POST</span>
+      <span class="path">/api/tournament/fixture/info</span>
+      <div class="desc">Ustaw info fixture (sędziowie, wykluczeni) - dla Discord bota</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method post">POST</span>
+      <span class="path">/api/tournament/fixture/ensure-match</span>
+      <div class="desc">Rozpocznij mecz turniejowy przez UUID fixture (body: { fixtureUuid, tournamentId })</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method post">POST</span>
+      <span class="path">/api/tournament/startmatch</span>
+      <div class="desc">Rozpocznij mecz turniejowy (body: { token, teamA, teamB, teamAShort, teamBShort })</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method post">POST</span>
+      <span class="path">/api/tournament/endmatch</span>
+      <div class="desc">Zakończ mecz turniejowy (body: { token, matchUuid, scoreA, scoreB })</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method post">POST</span>
+      <span class="path">/api/tournament/roblox-startmatch</span>
+      <div class="desc">Rozpocznij mecz z Roblox przez skróty drużyn (body: { teamAShort, teamBShort })</div>
+    </div>
+  </div>
+
+  <div class="category">
+    <h2>👤 Statystyki Graczy</h2>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/roblox/player/:robloxId</span>
+      <div class="desc">Pobierz profil gracza ze statystykami</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/roblox/player/:robloxId.json</span>
+      <div class="desc">Pobierz profil gracza w JSON</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/roblox/player/:robloxId/matches</span>
+      <div class="desc">Pobierz historię meczów gracza</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/roblox/player/:robloxId/matches.json</span>
+      <div class="desc">Pobierz historię meczów gracza w JSON</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/roblox/player/:robloxId/tournament/:tournamentId</span>
+      <div class="desc">Pobierz statystyki gracza w konkretnym turnieju</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method post">POST</span>
+      <span class="path">/api/roblox/player/:robloxId/matches</span>
+      <div class="desc">Zapisz mecz do historii gracza</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/player-stats</span>
+      <div class="desc">Pobierz wszystkie statystyki graczy</div>
+      <a href="/api/player-stats" target="_blank" class="json-link">📄 Zobacz JSON</a>
+    </div>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/players-history/:robloxId</span>
+      <div class="desc">Pobierz historię gracza z pliku JSON</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method post">POST</span>
+      <span class="path">/api/refresh-players-history</span>
+      <div class="desc">Odśwież plik historii graczy</div>
+    </div>
+  </div>
+
+  <div class="category">
+    <h2>📊 Tabele i Statystyki</h2>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/teams</span>
+      <div class="desc">Pobierz tabelę ligową (wszystkie drużyny)</div>
+      <a href="/api/teams" target="_blank" class="json-link">📄 Zobacz JSON</a>
+    </div>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/table</span>
+      <div class="desc">Pobierz tabelę ligową</div>
+      <a href="/api/table" target="_blank" class="json-link">📄 Zobacz JSON</a>
+    </div>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/stats</span>
+      <div class="desc">Pobierz ogólne statystyki</div>
+      <a href="/api/stats" target="_blank" class="json-link">📄 Zobacz JSON</a>
+    </div>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/fixtures</span>
+      <div class="desc">Pobierz wszystkie fixtures</div>
+      <a href="/api/fixtures" target="_blank" class="json-link">📄 Zobacz JSON</a>
+    </div>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/fixtures/:id</span>
+      <div class="desc">Pobierz szczegóły pojedynczego fixture</div>
+    </div>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/countries</span>
+      <div class="desc">Pobierz listę krajów (flagi)</div>
+      <a href="/api/countries" target="_blank" class="json-link">📄 Zobacz JSON</a>
+    </div>
+  </div>
+
+  <div class="category">
+    <h2>🔗 Zewnętrzne API (do embedowania)</h2>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/external/table</span>
+      <div class="desc">Tabela ligowa dla zewnętrznych serwisów</div>
+      <a href="/api/external/table" target="_blank" class="json-link">📄 Zobacz JSON</a>
+    </div>
+
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <span class="path">/api/external/stats</span>
+      <div class="desc">Statystyki dla zewnętrznych serwisów</div>
+      <a href="/api/external/stats" target="_blank" class="json-link">📄 Zobacz JSON</a>
+    </div>
+  </div>
+
+  <div style="margin-top:50px;padding-top:20px;border-top:1px solid #333;color:#666;text-align:center;">
+    <p>ScoreSync API v1.0 | 2026</p>
+  </div>
+</body>
+</html>

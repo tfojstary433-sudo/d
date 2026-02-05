@@ -1,0 +1,127 @@
+return function(player, data)
+	local HttpService = game:GetService("HttpService")
+	local Players = game:GetService("Players")
+	local TeamsService = game:GetService("Teams")
+	local m = require(game.ReplicatedStorage.Modules.Match)
+	local BACKEND_URL = "https://2cc8fdff-58f5-4de4-ba18-23c3c389e63d-00-10zd3s5b89sgn.janeway.replit.dev"
+
+	if not m.officialmatch or not m.UUID then
+		return "error", "Dostępne tylko dla oficjalnych meczy."
+	end
+
+	local outPlayerName = data[2]
+	local inPlayerName = data[3]
+
+	if not outPlayerName or outPlayerName == "" then
+		return "error", "Podaj nick gracza schodzącego"
+	end
+
+	if not inPlayerName or inPlayerName == "" then
+		return "error", "Podaj nick gracza wchodzącego"
+	end
+
+	-- Funkcja do znajdowania gracza po skrócie nicku
+	local function findPlayerByShortcut(shortcut)
+		if not shortcut or shortcut == "" then return nil end
+		shortcut = shortcut:lower()
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if string.sub(plr.Name:lower(), 1, #shortcut) == shortcut then
+				return plr
+			end
+		end
+		return nil
+	end
+
+	local outPlayer = findPlayerByShortcut(outPlayerName)
+	local inPlayer = findPlayerByShortcut(inPlayerName)
+
+	if not outPlayer then
+		return "error", "Nie znaleziono gracza wychodzącego: " .. outPlayerName
+	end
+
+	if not inPlayer then
+		return "error", "Nie znaleziono gracza wchodzącego: " .. inPlayerName
+	end
+
+	if not outPlayer.Team or not inPlayer.Team then
+		return "error", "Obaj gracze muszą być przypisani do drużyny"
+	end
+
+	if outPlayer.Team ~= inPlayer.Team then
+		return "error", "Obaj gracze muszą być w tej samej drużynie"
+	end
+
+	local playerTeam = outPlayer.Team.Name
+
+	local homeTeamName = game.ReplicatedStorage.MatchValues.HomeTeam.Value
+	local awayTeamName = game.ReplicatedStorage.MatchValues.AwayTeam.Value
+
+	local teamSide = nil
+	local teamCode = nil
+
+	if playerTeam == homeTeamName then
+		teamSide = "home"
+		teamCode = "A"
+	elseif playerTeam == awayTeamName then
+		teamSide = "away"
+		teamCode = "B"
+	else
+		return "error", "Drużyna " .. playerTeam .. " nie bierze udziału w tym meczu"
+	end
+
+	local minute = math.floor((m.currentTime or 0) / 60)
+
+	task.spawn(function()
+		pcall(function()
+			HttpService:PostAsync(
+				BACKEND_URL .. "/api/match/player/exit",
+				HttpService:JSONEncode({
+					matchUuid = m.UUID,
+					robloxId = outPlayer.UserId,
+					minute = minute
+				}),
+				Enum.HttpContentType.ApplicationJson
+			)
+		end)
+	end)
+
+	task.spawn(function()
+		pcall(function()
+			HttpService:PostAsync(
+				BACKEND_URL .. "/api/match/player/enter",
+				HttpService:JSONEncode({
+					matchUuid = m.UUID,
+					robloxId = inPlayer.UserId,
+					robloxNick = inPlayer.Name,
+					team = teamSide,
+					minute = minute
+				}),
+				Enum.HttpContentType.ApplicationJson
+			)
+		end)
+	end)
+
+	task.spawn(function()
+		local ok, res = pcall(function()
+			return HttpService:PostAsync(
+				BACKEND_URL .. "/api/match/event",
+				HttpService:JSONEncode({
+					uuid = m.UUID,
+					type = "substitution",
+					data = {
+						team = teamCode,
+						out = outPlayer.Name,
+						in_player = inPlayer.Name,
+						minute = minute
+					}
+				}),
+				Enum.HttpContentType.ApplicationJson
+			)
+		end)
+		if ok then
+		else
+		end
+	end)
+
+	return "success"
+end

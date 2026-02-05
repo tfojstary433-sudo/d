@@ -1,0 +1,568 @@
+local PhysicsService = game:GetService("PhysicsService")
+local HttpService = game:GetService("HttpService")
+
+-- SYSTEM MECZU PIŁKARSKIEGO Z PEŁNĄ OBSŁUGĄ
+-- Integracja z backendem Replit
+-- Komendy:
+-- :startmatch <drużyna1> <drużyna2> - rozpoczyna mecz
+-- :endmatch - kończy mecz
+-- :score <gole1> <gole2> - ustawia wynik
+-- :time <minuty> - ustawia czas (pierwsza połowa)
+-- :addtime <minuty> - dodaje czas (druga połowa)
+-- :przerwa - zatrzymuje timer
+-- :wznow - wznawia timer
+-- :goal home/away <zawodnik> - rejestruje gola z minutą
+-- :zmiana <out>:<in> - zmiana zawodnika z minutą
+-- :firstteam home/away <formacja> - ustawia skład drużyny
+-- :period 1/2 - zmienia połowę
+
+local BACKEND_URL = "https://e5b81dd4-d3ad-46af-983e-909fc1f23187-00-1ukrcic532wrb.kirk.replit.dev"
+local FALLBACK_URL = "http://localhost:3000"
+
+-- Game events
+local sm = game.ReplicatedStorage.Events.StartMatch
+local em = game.ReplicatedStorage.Events.EndMatch
+local t = game.ReplicatedStorage.Events.Time
+local s = game.ReplicatedStorage.Events.Score
+local uie = game.ReplicatedStorage.Events.SetFootballUI
+
+local tms = require(script.Parent.Modules.Teams)
+local mval = game.ReplicatedStorage.Values.Match
+local lbval = game.ReplicatedStorage.Values.Lockballs
+
+local adm = {"2115xDeathZ2115"}
+
+-- ZMIENNE STANU
+local currentMatchUUID = ""
+local currentTime = 0
+local maxTime = 0
+local baseTime = 0 
+local timerActive = false
+local currentAddedTime = 0
+local elapsedAddedTime = 0
+
+local currentHomeTeam = ""
+local currentAwayTeam = ""
+local currentHomeScore = 0
+local currentAwayScore = 0
+local currentPeriod = "Pierwsza połowa"
+
+local pausedTime = 0
+local timerSet = false
+local timerLoopRunning = false
+
+local Kits = require(game.ReplicatedStorage.Modules.Tms)
+
+local function applyKit(model, shirtId, pantsId)
+	local wear = model:FindFirstChild("UBRANIE WEAR")
+	if not wear then return end
+	local ch = wear:FindFirstChild("Coathanger")
+	if not ch then return end
+	local shirt = ch:FindFirstChildOfClass("Shirt")
+	local pants = ch:FindFirstChildOfClass("Pants")
+	if shirt then shirt.ShirtTemplate = shirtId end
+	if pants then pants.PantsTemplate = pantsId end
+	local display = ch:FindFirstChild("WYSTAWA")
+	if display then
+		local dShirt = display:FindFirstChildOfClass("Shirt")
+		local dPants = display:FindFirstChildOfClass("Pants")
+		if dShirt then dShirt.ShirtTemplate = shirtId end
+		if dPants then dPants.PantsTemplate = pantsId end
+	end
+end
+
+local function hasPermission(plr)
+	if game.PrivateServerId ~= "" and plr.UserId == game.PrivateServerOwnerId then
+		return true
+	end
+	if table.find(adm, plr.Name) then
+		return true
+	end
+	if plr.Team and plr.Team.Name == "Sędziowie" then
+		return true
+	end
+	return false
+end
+
+local function getTeam(query)
+	if not query or query == "" then return nil end
+	local upperQuery = query:upper()
+	if tms[upperQuery] then
+		return upperQuery
+	end
+	for abbr, data in pairs(tms) do
+		local name = data.fullName or data.fullname
+		if name and string.find(name:lower(), query:lower(), 1, true) then
+			return abbr
+		end
+	end
+	return nil
+end
+
+local function formatTime(seconds, period)
+	local m = math.floor(seconds / 60)
+	local s = seconds % 60
+
+	if period == "Druga połowa" then
+		if currentAddedTime > 0 then
+			return string.format("20+%02d", elapsedAddedTime)
+		else
+			return string.format("%02d:%02d", m, s)
+		end
+	else
+		return string.format("%02d:%02d", m, s)
+	end
+end
+
+local function sendToBackend(endpoint, data)
+	local urls = {BACKEND_URL, FALLBACK_URL}
+
+	for _, url in ipairs(urls) do
+		local success, result = pcall(function()
+			return HttpService:PostAsync(
+				url .. endpoint,
+				HttpService:JSONEncode(data),
+				Enum.HttpContentType.ApplicationJson
+			)
+		end)
+
+		if success then
+			print("[BACKEND ✓] " .. endpoint .. " -> " .. url)
+			return true
+		else
+			warn("[BACKEND ✗] Próba " .. url .. ": " .. tostring(result))
+		end
+	end
+
+	return false
+end
+
+local function updateUITimer()
+	local timerStr = formatTime(currentTime, currentPeriod)
+	local addedMinutes = 0
+
+	if currentAddedTime > 0 then
+		addedMinutes = math.floor(currentAddedTime / 60)
+	end
+
+	print("[TIMER UPDATE] "..timerStr)
+
+	t:FireAllClients(currentTime, addedMinutes)
+
+	pcall(function()
+		workspace.Ekran.SurfaceGui.Frame.Timer.Text = timerStr
+		if addedMinutes > 0 then
+			workspace.Ekran.SurfaceGui.Frame.Added.Text = "+" .. addedMinutes
+			workspace.Ekran.SurfaceGui.Frame.Added.Visible = true
+		else
+			workspace.Ekran.SurfaceGui.Frame.Added.Visible = false
+		end
+	end)
+end
+
+
+local function startTimerSync()
+	if timerLoopRunning then return end
+	timerLoopRunning = true
+	while currentMatchUUID ~= "" do
+		wait(1)
+		if timerActive then
+			if currentTime < maxTime then
+				currentTime = currentTime + 1
+			elseif currentAddedTime > 0 then
+				elapsedAddedTime = elapsedAddedTime + 1
+			end
+		end
+		local timerStr = formatTime(currentTime, currentPeriod)
+
+		if timerActive then
+			sendToBackend("/api/match/sync", {
+				uuid = currentMatchUUID,
+				teamAName = currentHomeTeam,
+				teamAScore = currentHomeScore,
+				teamBName = currentAwayTeam,
+				teamBScore = currentAwayScore,
+				timer = timerStr,
+				period = currentPeriod,
+				addedTime = currentAddedTime,
+				active = timerActive
+			})
+		end
+
+		updateUITimer()
+	end
+	timerLoopRunning = false
+end
+
+game.Players.PlayerAdded:Connect(function(plr)
+	local folder = Instance.new("Folder")
+	folder.Name = plr.Name
+	folder.Parent = workspace.Balls
+
+	if timerActive then
+		local timerStr = formatTime(currentTime, currentPeriod)
+		t:FireClient(plr, currentTime, math.floor(currentAddedTime / 60))
+
+	end
+
+	plr.Chatted:Connect(function(msg)
+		local plrfolder = workspace.Balls:FindFirstChild(plr.Name)
+		if not plrfolder then return end
+
+		local args = string.split(msg, " ")
+		local command = args[1]:lower()
+		local arg1 = args[2]
+		local arg2 = args[3]
+
+		if command == ":pb" then
+			if lbval.Value and plr.Team.Name ~= "Sędziowie" then return end
+			if plrfolder:FindFirstChild("Ball") then
+				plrfolder.Ball:Destroy()
+			end
+			local ball = game.ServerStorage.Ball:Clone()
+			ball.Parent = plrfolder
+			ball.Position = plr.Character.HumanoidRootPart.Position
+
+		elseif command == ":startmatch" then
+			if not hasPermission(plr) then return end
+			if not (arg1 and arg2) then return end
+			local t1 = getTeam(arg1)
+			local t2 = getTeam(arg2)
+			if not (t1 and t2) then return end
+			local d1 = tms[t1]
+			local d2 = tms[t2]
+			local homeData = Kits[d1.fullName or d1.fullname or t1]
+			local awayData = Kits[d2.fullName or d2.fullname or t2]
+
+			currentHomeTeam = d1.fullName or d1.fullname or t1
+			currentAwayTeam = d2.fullName or d2.fullname or t2
+			currentHomeScore = 0
+			currentAwayScore = 0
+			currentAddedTime = 0
+			elapsedAddedTime = 0
+			currentTime = 0
+			maxTime = 0
+			timerActive = false
+			timerSet = false
+			pausedTime = 0
+			currentPeriod = "Pierwsza połowa"
+
+			if homeData and awayData then
+				for i = 1, 18 do
+					local model = workspace.StrojeHome:FindFirstChild(tostring(i))
+					if model then
+						if i == 3 then
+							applyKit(model, homeData.GkKit, homeData.GkShorts)
+						else
+							applyKit(model, homeData.HomeKit, homeData.HomeShorts)
+						end
+					end
+				end
+				for i = 1, 18 do
+					local model = workspace.StrojeAway:FindFirstChild(tostring(i))
+					if model then
+						if i == 3 then
+							applyKit(model, awayData.GkKit, awayData.GkShorts)
+						else
+							applyKit(model, awayData.AwayKit, awayData.AwayShorts)
+						end
+					end
+				end
+			end
+
+			sm:FireAllClients(t1, t2, d1.h_pos, d2.a_pos, d1.image_id, d2.image_id)
+			game.StarterGui.MatchUI.Enabled = true
+			game.StarterGui.MatchUI.Frame.Team1_Name.Text = t1
+			game.StarterGui.MatchUI.Frame.Team2_Name.Text = t2
+			game.StarterGui.MatchUI.Frame.Team1_Score.Text = "0"
+			game.StarterGui.MatchUI.Frame.Team2_Score.Text = "0"
+			game.StarterGui.MatchUI.Frame.Timer.Text = "00:00"
+
+			local screen = workspace.Ekran.SurfaceGui
+			screen.Enabled = true
+			screen.Frame.HomeName.Text = (d1.fullName or d1.fullname):upper()
+			screen.Frame.AwayName.Text = (d2.fullName or d2.fullname):upper()
+			screen.Frame.HomeScore.Text = "0"
+			screen.Frame.AwayScore.Text = "0"
+			screen.Frame.Timer.Text = "00:00"
+			screen.Frame.HomeLogo.Image = homeData.Logo
+			screen.Frame.AwayLogo.Image = awayData.Logo
+
+			if plrfolder:FindFirstChild("Ball") then
+				plrfolder.Ball:Destroy()
+			end
+			local ball = game.ServerStorage.Ball:Clone()
+			ball.Parent = plrfolder
+			ball.Position = Vector3.new(-5262.742, 518.6, 1372.633)
+
+			uie:FireAllClients("Match", true)
+			mval.Value = true
+
+			local matchData = {}
+			local success, result = pcall(function()
+				return HttpService:PostAsync(BACKEND_URL .. "/api/match/start", HttpService:JSONEncode({
+					teamA = currentHomeTeam,
+					teamB = currentAwayTeam
+				}), Enum.HttpContentType.ApplicationJson)
+			end)
+
+			if success then
+				matchData = HttpService:JSONDecode(result)
+				currentMatchUUID = matchData.uuid
+				print("[MATCH] UUID: " .. currentMatchUUID)
+			else
+				local fallbackSuccess, fallbackResult = pcall(function()
+					return HttpService:PostAsync(FALLBACK_URL .. "/api/match/start", HttpService:JSONEncode({
+						teamA = currentHomeTeam,
+						teamB = currentAwayTeam
+					}), Enum.HttpContentType.ApplicationJson)
+				end)
+				if fallbackSuccess then
+					matchData = HttpService:JSONDecode(fallbackResult)
+					currentMatchUUID = matchData.uuid
+					print("[MATCH] UUID (fallback): " .. currentMatchUUID)
+				end
+			end
+
+		elseif command == ":endmatch" then
+			if not hasPermission(plr) then return end
+			local finalHomeTeam = currentHomeTeam
+			local finalAwayTeam = currentAwayTeam
+			local finalHomeScore = currentHomeScore
+			local finalAwayScore = currentAwayScore
+
+			em:FireAllClients()
+			uie:FireAllClients("Match", false)
+			game.StarterGui.MatchUI.Enabled = false
+
+			local screen = workspace.Ekran.SurfaceGui
+			screen.Enabled = false
+			screen.Frame.HomeName.Text = ""
+			screen.Frame.AwayName.Text = ""
+			screen.Frame.HomeScore.Text = "0"
+			screen.Frame.AwayScore.Text = "0"
+			screen.Frame.Timer.Text = "00:00"
+			game.StarterGui.MatchUI.Frame.Added.Position = UDim2.new(0.765, 0, 0.51, 0)
+			game.StarterGui.MatchUI.Frame.Added.Visible = false
+
+			mval.Value = false
+			timerActive = false
+			currentTime = 0
+			currentAddedTime = 0
+			elapsedAddedTime = 0
+			currentHomeTeam = ""
+			currentAwayTeam = ""
+			currentHomeScore = 0
+			currentAwayScore = 0
+			timerSet = false
+			pausedTime = 0
+
+			if currentMatchUUID ~= "" then
+				sendToBackend("/api/match/end", {uuid = currentMatchUUID})
+				currentMatchUUID = ""
+			end
+
+		elseif command == ":score" then
+			if not (arg1 and arg2) then return end
+			currentHomeScore = tonumber(arg1) or 0
+			currentAwayScore = tonumber(arg2) or 0
+
+			game.StarterGui.MatchUI.Frame.Team1_Score.Text = arg1
+			game.StarterGui.MatchUI.Frame.Team2_Score.Text = arg2
+			workspace.Ekran.SurfaceGui.Frame.HomeScore.Text = arg1
+			workspace.Ekran.SurfaceGui.Frame.AwayScore.Text = arg2
+			s:FireAllClients(arg1, arg2)
+
+			if currentMatchUUID ~= "" then
+				sendToBackend("/api/match/update", {
+					uuid = currentMatchUUID,
+					teamAScore = currentHomeScore,
+					teamBScore = currentAwayScore
+				})
+			end
+
+		elseif command == ":time" then
+			if not hasPermission(plr) then return end
+			if not tonumber(arg1) then return end
+			if currentPeriod == "Druga połowa" then
+				print("[ERROR] Use :addtime in second half")
+				return
+			end
+			local addedMinutes = tonumber(arg1) * 60
+			currentTime = 0
+			maxTime = addedMinutes
+			baseTime = addedMinutes
+			timerSet = true
+			timerActive = true
+			elapsedAddedTime = 0
+			currentAddedTime = 0
+			print("[TIME SET] " .. arg1 .. " minutes, starting timer")
+			startTimerSync()
+			updateUITimer()
+
+		elseif command == ":addtime" then
+			if not hasPermission(plr) then return end
+			if not tonumber(arg1) then return end
+			local addedMinutes = tonumber(arg1) * 60
+			currentAddedTime = addedMinutes
+			elapsedAddedTime = 0
+			maxTime = maxTime + addedMinutes
+			print("[TIME ADDED] +" .. arg1 .. " minutes")
+			updateUITimer()
+
+		elseif command == ":przerwa" then
+			if not hasPermission(plr) then return end
+			timerActive = false
+			pausedTime = currentTime
+			updateUITimer()
+			print("[PAUSE]")
+
+		elseif command == ":wznow" then
+			if not hasPermission(plr) then return end
+			timerActive = true
+			timerLoopRunning = false
+			updateUITimer()
+			print("[RESUME]")
+			startTimerSync()
+
+		elseif command == ":goal" then
+			if not hasPermission(plr) then return end
+			if not arg1 then return end
+			local team = arg1:lower() == "away" and "away" or "home"
+			local scorer = arg2 or "Unknown"
+			local minute = math.floor(currentTime / 60)
+
+			if currentPeriod == "Druga połowa" then
+				if currentAddedTime > 0 and currentTime == maxTime then
+					minute = 20 + elapsedAddedTime
+				else
+					minute = 20 + minute
+				end
+			end
+
+			if currentMatchUUID ~= "" then
+				sendToBackend("/api/match/event", {
+					uuid = currentMatchUUID,
+					type = "goal",
+					data = {
+						team = team,
+						scorer = scorer,
+						minute = minute
+					}
+				})
+			end
+			print("[GOAL] " .. (team == "home" and currentHomeTeam or currentAwayTeam) .. " - " .. scorer .. " (" .. minute .. "')")
+
+		elseif command == ":zmiana" then
+			if not hasPermission(plr) then return end
+			if not arg1 then return end
+			local parts = string.split(arg1, ":")
+			if #parts < 2 then return end
+			local playerOut = tonumber(string.match(parts[1], "%d+"))
+			local playerIn = tonumber(string.match(parts[2], "%d+"))
+			if not (playerOut and playerIn) then return end
+			local minute = math.floor(currentTime / 60)
+
+			if currentPeriod == "Druga połowa" then
+				if currentAddedTime > 0 and currentTime == maxTime then
+					minute = 20 + elapsedAddedTime
+				else
+					minute = 20 + minute
+				end
+			end
+
+			if currentMatchUUID ~= "" then
+				sendToBackend("/api/match/event", {
+					uuid = currentMatchUUID,
+					type = "substitution",
+					data = {
+						playerOut = playerOut,
+						playerIn = playerIn,
+						minute = minute
+					}
+				})
+			end
+			print("[SUB] Out: #" .. playerOut .. " In: #" .. playerIn .. " (" .. minute .. "')")
+
+		elseif command == ":firstteam" then
+			if not hasPermission(plr) then return end
+			if not (arg1 and arg2) then return end
+			local team = arg1:lower()
+			local formation = arg2
+
+			if currentMatchUUID ~= "" then
+				sendToBackend("/api/match/event", {
+					uuid = currentMatchUUID,
+					type = "lineup",
+					data = {
+						team = team,
+						formation = formation,
+						minute = 0
+					}
+				})
+			end
+			print("[LINEUP] " .. team .. " - " .. formation)
+
+		elseif command == ":period" then
+			if not hasPermission(plr) then return end
+			if not arg1 then return end
+			if arg1:lower() == "1" then
+				currentPeriod = "Pierwsza połowa"
+				elapsedAddedTime = 0
+			elseif arg1:lower() == "2" then
+				currentPeriod = "Druga połowa"
+				elapsedAddedTime = 0
+			end
+			if currentMatchUUID ~= "" then
+				sendToBackend("/api/match/update", {
+					uuid = currentMatchUUID,
+					period = currentPeriod
+				})
+			end
+			print("[PERIOD] " .. currentPeriod)
+			updateUITimer()
+		end
+	end)
+end)
+
+game.Players.PlayerRemoving:Connect(function()
+	task.wait(1)
+	if #game.Players:GetPlayers() == 0 then
+		print("[AUTO END] Wszyscy gracze wyszli z serwera")
+
+		if currentMatchUUID ~= "" then
+			sendToBackend("/api/match/end", {
+				uuid = currentMatchUUID
+			})
+
+			em:FireAllClients()
+			uie:FireAllClients("Match", false)
+			game.StarterGui.MatchUI.Enabled = false
+
+			local screen = workspace.Ekran.SurfaceGui
+			screen.Enabled = false
+			screen.Frame.HomeName.Text = ""
+			screen.Frame.AwayName.Text = ""
+			screen.Frame.HomeScore.Text = "0"
+			screen.Frame.AwayScore.Text = "0"
+			screen.Frame.Timer.Text = "00:00"
+
+			mval.Value = false
+			timerActive = false
+			currentTime = 0
+			currentAddedTime = 0
+			elapsedAddedTime = 0
+			currentHomeTeam = ""
+			currentAwayTeam = ""
+			currentHomeScore = 0
+			currentAwayScore = 0
+			timerSet = false
+			pausedTime = 0
+
+			print("[AUTO END] Mecz został automatycznie zakończony")
+			currentMatchUUID = ""
+		end
+	end
+end)
+
+print("[LUA SCRIPT] Loaded - Backend: " .. BACKEND_URL .. " | Fallback: " .. FALLBACK_URL)

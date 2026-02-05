@@ -1,0 +1,158 @@
+local PhysicsService = game:GetService("PhysicsService")
+local sm = game.ReplicatedStorage.Events.StartMatch
+local em = game.ReplicatedStorage.Events.EndMatch
+local t = game.ReplicatedStorage.Events.Time
+local s = game.ReplicatedStorage.Events.Score
+local g = game.ReplicatedStorage.Events.Goal
+local m = require(game.ReplicatedStorage.Modules.Match)
+
+local ts = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+
+local timer = false
+local currentTime = 0
+local timeconect
+local addedVisible = false
+
+local function format(seconds)
+	local minutes = math.floor(seconds / 60)
+	local secs = seconds % 60
+
+	return string.format("%02d:%02d", minutes, secs)
+end
+
+
+sm.OnClientEvent:Connect(function(team1, team2)
+	if timeconect then
+		timeconect:Disconnect()
+		timer = false
+	end
+
+	script.Parent.Frame.Team1_Name.Text = team1
+	script.Parent.Frame.Team2_Name.Text = team2
+	script.Parent.Frame.Timer.Text = "00:00"
+	script.Parent.Frame.Team1_Score.Text = 0
+	script.Parent.Frame.Team2_Score.Text = 0
+	script.Parent.Enabled = true
+end)
+
+
+em.OnClientEvent:Connect(function()
+	if timeconect then
+		timeconect:Disconnect()
+	end
+	timer = false
+
+	local added = script.Parent.Frame.Added
+	added.Position = UDim2.new(0.141, 0, 0.43, 0)
+	added.Visible = false
+
+	script.Parent.Enabled = false
+end)
+
+
+s.OnClientEvent:Connect(function(score1, score2)
+	script.Parent.Frame.Team1_Score.Text = score1
+	script.Parent.Frame.Team2_Score.Text = score2
+end)
+
+
+t.OnClientEvent:Connect(function(serverTime, addedMinutes, status)
+
+	if status == "stop" then
+		timer = false
+		if timeconect then timeconect:Disconnect() end
+
+		addedVisible = false
+		script.Parent.Frame.Added.Visible = false
+		script.Parent.Frame.Timer.Text = format(serverTime)
+		return
+	end
+
+	currentTime = serverTime
+	script.Parent.Frame.Timer.Text = format(currentTime)
+
+	if not timer then
+		timer = true
+		timeconect = RunService.Heartbeat:Connect(function(dt)
+			if not timer then return end
+			currentTime += dt
+			script.Parent.Frame.Timer.Text = format(math.floor(currentTime))
+		end)
+	end
+
+	if addedMinutes and addedMinutes > 0 then
+		local added = script.Parent.Frame.Added
+		added.Timer.Text = "+" .. addedMinutes
+
+		if not addedVisible then
+			addedVisible = true
+
+			added.Position = UDim2.new(0.141, 0, 0.43, 0)
+			added.Visible = true
+
+			ts:Create(
+				added,
+				TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+				{Position = UDim2.new(0.141, 0, 0.58, 0)}
+			):Play()
+		end
+	end
+end)
+
+
+
+g.OnClientEvent:Connect(function(scorer)
+	local ui = script.Parent.Frame.Goal
+	local label = ui.TextLabel
+
+	local tweenTime = 0.5
+	local displayDuration = 5
+
+	local colors = {
+		Color3.fromRGB(20, 35, 65),
+		Color3.fromRGB(15, 144, 226),
+		Color3.fromRGB(37, 39, 36)
+	}
+
+	local textColors = {
+		Color3.fromRGB(15, 144, 226),
+		Color3.fromRGB(255,255,255),
+		Color3.fromRGB(255, 255, 255)
+	}
+
+	local tweenInfoIn = TweenInfo.new(tweenTime, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+	local tweenInfoOut = TweenInfo.new(tweenTime, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+
+	local targetVisible = {Size = UDim2.new(-0.781, 0, 0.18, 0)}
+	local targetHidden = {Size = UDim2.new(0, 0, 0.18, 0)}
+
+	ui.Visible = true
+	label.Text = "GOOOOL!"
+
+	local tweenDown = ts:Create(ui, tweenInfoIn, targetVisible)
+	tweenDown:Play()
+	tweenDown.Completed:Wait()
+
+	for i = 1, #colors do
+		local ti = TweenInfo.new(0.6, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+
+		local t = ts:Create(ui, ti, {BackgroundColor3 = colors[i]})
+		local t2 = ts:Create(label, ti, {TextColor3 = textColors[i]})
+
+		t:Play()
+		t2:Play()
+		t.Completed:Wait()
+	end
+
+	label.TextTransparency = 1
+	label.Text = scorer
+
+	ts:Create(label, TweenInfo.new(0.4), {TextTransparency = 0}):Play()
+	task.wait(displayDuration)
+
+	ts:Create(ui, tweenInfoOut, targetHidden):Play()
+	task.wait(tweenTime)
+
+	ui.Visible = false
+end)

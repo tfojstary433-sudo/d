@@ -1,0 +1,241 @@
+const {
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle
+} = require("discord.js");
+
+const axios = require("axios");
+const clubs = require("../clubs.json");
+
+const wagerCommand = require("../Commands/utworzmecz");
+
+const LINEUP_API =
+  "https://2cc8fdff-58f5-4de4-ba18-23c3c389e63d-00-10zd3s5b89sgn.janeway.replit.dev/api/match/lineup";
+
+const TARGET_GUILD_ID = "1464915396137324854";
+const TARGET_CHANNEL_ID = "1464915485228404879";
+
+/* ===== CACHE SKŁADÓW ===== */
+const skladCache = new Map();
+
+/* ===== ROBLOX IDS ===== */
+async function fetchRobloxIds(usernames) {
+  const res = await axios.post("https://users.roblox.com/v1/usernames/users", {
+    usernames,
+    excludeBannedUsers: true
+  });
+
+  const map = {};
+  res.data.data.forEach(u => {
+    map[u.name.toLowerCase()] = u.id;
+  });
+  return map;
+}
+
+function extractClubName(roleName) {
+  if (!roleName) return "Nieznany klub";
+
+  // usuń wszystko przed pierwszą literą
+  let cleaned = roleName.replace(/^[^A-ZĄĆĘŁŃÓŚŻŹ]*/i, "");
+
+  // utnij wszystko po |
+  cleaned = cleaned.split("|")[0];
+
+  return cleaned.trim();
+}
+
+module.exports = {
+  name: "interactionCreate",
+  async execute(interaction, client) {
+
+    /* ==============================
+       SLASH COMMANDS
+    ============================== */
+    if (interaction.isChatInputCommand()) {
+      const command = client.commands.get(interaction.commandName);
+      if (!command) return;
+
+      try {
+        await command.execute(interaction, client);
+      } catch (error) {
+        console.error(`❌ Error in command ${interaction.commandName}:`, error);
+        if (interaction.deferred || interaction.replied) {
+          await interaction.editReply({ content: "❌ Wystąpił błąd." });
+        } else {
+          await interaction.reply({ content: "❌ Wystąpił błąd.", ephemeral: true });
+        }
+      }
+      return;
+    }
+
+    /* ==============================
+       BUTTONS
+    ============================== */
+    if (interaction.isButton()) {
+
+      /* ---- SKŁAD: ODRZUĆ ---- */
+      if (interaction.customId === "sklad_reject") {
+        await interaction.message.delete().catch(() => {});
+        return interaction.reply({ content: "Skład odrzucony.", ephemeral: true });
+      }
+
+      /* ---- SKŁAD: AKCEPTUJ ---- */
+      if (interaction.customId === "sklad_accept") {
+        const modal = new ModalBuilder()
+          .setCustomId(`sklad_uuid_${interaction.message.id}`)
+          .setTitle("UUID meczu");
+
+        const uuidInput = new TextInputBuilder()
+          .setCustomId("uuid")
+          .setLabel("UUID meczu")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true);
+
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(uuidInput)
+        );
+
+        return interaction.showModal(modal);
+      }
+
+      /* ---- UTWORZ MECZ (STARY KOD) ---- */
+      try {
+        await wagerCommand.buttonHandler(interaction);
+      } catch (error) {
+        console.error("❌ Błąd w buttonHandler:", error);
+        return interaction.reply({
+          content: "❌ Błąd przy kliknięciu przycisku.",
+          ephemeral: true
+        });
+      }
+    }
+
+    /* ==============================
+       MODALS
+    ============================== */
+    if (interaction.isModalSubmit()) {
+
+      /* ---- MODAL: SKŁAD ---- */
+      if (interaction.customId.startsWith("sklad_modal_")) {
+        const clubRoleId = interaction.customId.replace("sklad_modal_", "");
+        const clubRole = interaction.guild.roles.cache.get(clubRoleId);
+        const clubName = extractClubName(clubRole?.name);
+
+        const startersRaw = interaction.fields.getTextInputValue("starters");
+        const benchRaw = interaction.fields.getTextInputValue("bench");
+
+        const parse = (text) =>
+          text.split("\n").map(l => {
+            const [name, number, position] = l.split(":");
+            return {
+              name: name?.trim(),
+              number: Number(number),
+              position: position?.trim()
+            };
+          }).filter(p => p.name);
+
+        const starters = parse(startersRaw);
+        const bench = parse(benchRaw);
+
+        const embed = new EmbedBuilder()
+          .setColor(0x3498db)
+          .setTitle("📋 Skład drużyny")
+          .addFields(
+            { name: "Drużyna", value: clubName },
+            {
+              name: "WYJŚCIOWA 11",
+              value: starters.map(p => `#${p.number} ${p.name} (${p.position})`).join("\n")
+            },
+            {
+              name: "ŁAWKA REZERWOWYCH",
+              value: bench.map(p => `#${p.number} ${p.name} (${p.position})`).join("\n")
+            }
+          )
+          .setFooter({ text: `Autor: ${interaction.user.tag}` });
+
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId("sklad_accept")
+            .setLabel("✅ Akceptuj")
+            .setStyle(ButtonStyle.Success),
+          new ButtonBuilder()
+            .setCustomId("sklad_reject")
+            .setLabel("❌ Odrzuć")
+            .setStyle(ButtonStyle.Danger)
+        );
+
+        const guild = await interaction.client.guilds.fetch(TARGET_GUILD_ID);
+        const channel = await guild.channels.fetch(TARGET_CHANNEL_ID);
+
+        const msg = await channel.send({
+          embeds: [embed],
+          components: [row]
+        });
+
+        skladCache.set(msg.id, { starters, bench, clubName });
+
+        return interaction.reply({
+          content: "✅ Skład wysłany do akceptacji.",
+          ephemeral: true
+        });
+      }
+
+      /* ---- MODAL: UUID → REPLIT ---- */
+      if (interaction.customId.startsWith("sklad_uuid_")) {
+        const messageId = interaction.customId.replace("sklad_uuid_", "");
+        const data = skladCache.get(messageId);
+
+        if (!data) {
+          return interaction.reply({
+            content: "❌ Nie znaleziono danych składu.",
+            ephemeral: true
+          });
+        }
+
+        const uuid = interaction.fields.getTextInputValue("uuid");
+
+        const names = [...data.starters, ...data.bench].map(p => p.name);
+        const idMap = await fetchRobloxIds(names);
+
+        const mapPlayers = (arr) =>
+          arr.map(p => ({
+            id: idMap[p.name.toLowerCase()],
+            name: p.name,
+            number: p.number,
+            position: p.position
+          }));
+
+        await axios.post(LINEUP_API, {
+          uuid,
+          team: data.clubName,
+          formation: "N/A",
+          starters: mapPlayers(data.starters),
+          bench: mapPlayers(data.bench)
+        });
+
+        await interaction.message.edit({ components: [] });
+        skladCache.delete(messageId);
+
+        return interaction.reply({
+          content: "✅ Skład zapisany w systemie.",
+          ephemeral: true
+        });
+      }
+
+      /* ---- UTWORZ MECZ (STARY MODAL) ---- */
+      try {
+        await wagerCommand.modalHandler(interaction);
+      } catch (error) {
+        console.error("❌ Błąd w modalHandler:", error);
+        return interaction.reply({
+          content: "❌ Błąd przy przetwarzaniu formularza.",
+          ephemeral: true
+        });
+      }
+    }
+  }
+};

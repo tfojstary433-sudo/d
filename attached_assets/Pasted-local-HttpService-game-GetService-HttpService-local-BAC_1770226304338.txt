@@ -1,0 +1,82 @@
+local HttpService = game:GetService("HttpService")
+local BACKEND_URL = "https://2cc8fdff-58f5-4de4-ba18-23c3c389e63d-00-10zd3s5b89sgn.janeway.replit.dev"
+
+local PlayerTracking = {}
+
+-- Gracz wchodzi na boisko (start meczu lub zmiana IN)
+function PlayerTracking:Enter(matchUuid, player, team, minute)
+    local robloxId = player.UserId
+    local robloxNick = player.Name
+    
+    task.spawn(function()
+        local ok, res = pcall(function()
+            return HttpService:PostAsync(
+                BACKEND_URL .. "/api/match/player/enter",
+                HttpService:JSONEncode({
+                    matchUuid = matchUuid,
+                    robloxId = robloxId,
+                    robloxNick = robloxNick,
+                    team = team,
+                    minute = minute or 0
+                }),
+                Enum.HttpContentType.ApplicationJson
+            )
+        end)
+        if ok then
+            print("[PlayerTrack] " .. robloxNick .. " wszedł w " .. (minute or 0) .. "'")
+        else
+            warn("[PlayerTrack] Błąd enter:", res)
+        end
+    end)
+end
+
+-- Gracz schodzi z boiska (zmiana OUT)
+function PlayerTracking:Exit(matchUuid, player, minute)
+    local robloxId = player.UserId
+    
+    task.spawn(function()
+        local ok, res = pcall(function()
+            return HttpService:PostAsync(
+                BACKEND_URL .. "/api/match/player/exit",
+                HttpService:JSONEncode({
+                    matchUuid = matchUuid,
+                    robloxId = robloxId,
+                    minute = minute
+                }),
+                Enum.HttpContentType.ApplicationJson
+            )
+        end)
+        if ok then
+            local data = HttpService:JSONDecode(res)
+            print("[PlayerTrack] " .. player.Name .. " zszedł - rozegrał " .. data.minutesPlayed .. "' (łącznie " .. data.totalMinutes .. "')")
+        else
+            warn("[PlayerTrack] Błąd exit:", res)
+        end
+    end)
+end
+
+-- Zakończ śledzenie całego meczu (wywoływane przy końcu meczu)
+function PlayerTracking:Finalize(matchUuid, finalMinute, tournamentId, tournamentName)
+    local ok, res = pcall(function()
+        return HttpService:PostAsync(
+            BACKEND_URL .. "/api/match/players/finalize",
+            HttpService:JSONEncode({
+                matchUuid = matchUuid,
+                finalMinute = finalMinute,
+                tournamentId = tournamentId,
+                tournamentName = tournamentName
+            }),
+            Enum.HttpContentType.ApplicationJson
+        )
+    end)
+    if ok then
+        local data = HttpService:JSONDecode(res)
+        print("[PlayerTrack] Zapisano " .. data.saved .. " graczy")
+        return data
+    else
+        warn("[PlayerTrack] Błąd finalize:", res)
+        return nil
+    end
+end
+
+return PlayerTracking

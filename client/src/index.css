@@ -1,0 +1,83 @@
+@import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@300;400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Sporty Dark Theme Base */
+  --font-display: 'Chakra Petch', sans-serif;
+  --font-sans: 'Inter', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  /* Deep space/stadium night colors */
+  --background: 224 71% 4%;
+  --foreground: 210 40% 98%;
+
+  /* Vibrant Lime Green Accent - Sporty & energetic */
+  --primary: 84 81% 44%;
+  --primary-foreground: 224 71% 4%;
+
+  /* Secondary Navy Blue */
+  --secondary: 217 33% 17%;
+  --secondary-foreground: 210 40% 98%;
+
+  /* Muted elements */
+  --muted: 217 33% 12%;
+  --muted-foreground: 215 20% 65%;
+
+  /* Accents */
+  --accent: 84 81% 44%;
+  --accent-foreground: 224 71% 4%;
+
+  /* Semantic */
+  --destructive: 0 62% 30%;
+  --destructive-foreground: 210 40% 98%;
+
+  /* Borders & Rings */
+  --border: 217 33% 20%;
+  --input: 217 33% 17%;
+  --ring: 84 81% 44%;
+
+  /* Card Surfaces */
+  --card: 222 47% 7%;
+  --card-foreground: 210 40% 98%;
+}
+
+@layer base {
+  body {
+    @apply bg-background text-foreground antialiased selection:bg-primary/30 selection:text-primary-foreground;
+    font-family: var(--font-sans);
+    background-image: 
+      radial-gradient(circle at 50% 0%, hsl(var(--primary) / 0.15), transparent 40%),
+      linear-gradient(to bottom, transparent, hsl(var(--background)));
+    min-height: 100vh;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+    @apply tracking-tight font-bold uppercase;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply bg-card/60 backdrop-blur-xl border border-white/10 shadow-xl;
+  }
+  
+  .neon-text {
+    text-shadow: 0 0 10px hsl(var(--primary) / 0.5);
+  }
+
+  .live-indicator {
+    @apply relative flex h-3 w-3;
+  }
+  
+  .live-indicator span:first-child {
+    @apply animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75;
+  }
+  
+  .live-indicator span:last-child {
+    @apply relative inline-flex rounded-full h-3 w-3 bg-red-500;
+  }
+}

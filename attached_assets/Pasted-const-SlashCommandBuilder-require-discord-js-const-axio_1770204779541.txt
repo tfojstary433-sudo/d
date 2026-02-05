@@ -1,0 +1,82 @@
+const { SlashCommandBuilder } = require("discord.js");
+const axios = require("axios");
+
+const API_URL = "https://2cc8fdff-58f5-4de4-ba18-23c3c389e63d-00-10zd3s5b89sgn.janeway.replit.dev/api/match/info";
+
+module.exports = {
+  data: new SlashCommandBuilder()
+    .setName("info")
+    .setDescription("Ustaw sędziów i wykluczonych zawodników")
+    .addStringOption(o => o.setName("uuid").setDescription("UUID meczu").setRequired(true))
+    .addStringOption(o => o.setName("glowny").setDescription("Sędzia główny").setRequired(false))
+    .addStringOption(o => o.setName("asystent1").setDescription("Asystent 1 (liniowy)").setRequired(false))
+    .addStringOption(o => o.setName("asystent2").setDescription("Asystent 2 (liniowy)").setRequired(false))
+    .addStringOption(o => o.setName("techniczny").setDescription("Sędzia techniczny (4. sędzia)").setRequired(false))
+    .addStringOption(o => o.setName("var").setDescription("Sędzia VAR").setRequired(false))
+    .addStringOption(o => o.setName("avar").setDescription("Asystent VAR (AVAR)").setRequired(false))
+    .addStringOption(o => o.setName("wykluczeni").setDescription("Format: Nick:Powód:Drużyna, Nick2:Powód2:Drużyna2").setRequired(false)),
+
+  async execute(interaction) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const uuid = interaction.options.getString("uuid");
+    const main = interaction.options.getString("glowny");
+    const assistant1 = interaction.options.getString("asystent1");
+    const assistant2 = interaction.options.getString("asystent2");
+    const fourth = interaction.options.getString("techniczny");
+    const varRef = interaction.options.getString("var");
+    const avar = interaction.options.getString("avar");
+    const excludedRaw = interaction.options.getString("wykluczeni");
+
+    // Parsuj sędziów
+    const referees = {};
+    if (main) referees.main = main;
+    if (assistant1) referees.assistant1 = assistant1;
+    if (assistant2) referees.assistant2 = assistant2;
+    if (fourth) referees.fourth = fourth;
+    if (varRef) referees.var = varRef;
+    if (avar) referees.avar = avar;
+
+    // Parsuj wykluczonych: Nick:Powód:Drużyna
+    let excludedPlayers = [];
+    if (excludedRaw) {
+      excludedPlayers = excludedRaw.split(",").map(item => {
+        const parts = item.trim().split(":");
+        return {
+          name: parts[0]?.trim() || "",
+          reason: parts[1]?.trim() || "Brak powodu",
+          team: parts[2]?.trim() || ""
+        };
+      }).filter(p => p.name);
+    }
+
+    try {
+      await axios.post(API_URL, { uuid, referees, excludedPlayers });
+
+      // Formatuj odpowiedź
+      let response = "✅ **Informacje zapisane!**\n\n";
+      
+      if (Object.keys(referees).length > 0) {
+        response += "⚽ **Sędziowie:**\n";
+        if (referees.main) response += `  🎯 Główny: ${referees.main}\n`;
+        if (referees.assistant1) response += `  🚩 Asystent 1: ${referees.assistant1}\n`;
+        if (referees.assistant2) response += `  🚩 Asystent 2: ${referees.assistant2}\n`;
+        if (referees.fourth) response += `  4️⃣ Techniczny: ${referees.fourth}\n`;
+        if (referees.var) response += `  📺 VAR: ${referees.var}\n`;
+        if (referees.avar) response += `  📺 AVAR: ${referees.avar}\n`;
+      }
+
+      if (excludedPlayers.length > 0) {
+        response += "\n❌ **Wykluczeni:**\n";
+        excludedPlayers.forEach(p => {
+          response += `  • ${p.name} - ${p.reason}${p.team ? ` (${p.team})` : ""}\n`;
+        });
+      }
+
+      await interaction.editReply(response);
+    } catch (err) {
+      console.error("Error in info command:", err);
+      await interaction.editReply(`❌ Błąd: ${err.message}`);
+    }
+  }
+};

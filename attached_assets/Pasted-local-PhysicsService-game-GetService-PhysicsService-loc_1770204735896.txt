@@ -1,0 +1,804 @@
+local PhysicsService = game:GetService("PhysicsService")
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local TeamsService = game:GetService("Teams")
+
+
+local BACKEND_URL = "https://2cc8fdff-58f5-4de4-ba18-23c3c389e63d-00-10zd3s5b89sgn.janeway.replit.dev" 
+
+local sm = game.ReplicatedStorage.Events.StartMatch
+local em = game.ReplicatedStorage.Events.EndMatch
+local t = game.ReplicatedStorage.Events.Time
+local s = game.ReplicatedStorage.Events.Score
+local uie = game.ReplicatedStorage.Events.SetFootballUI
+
+local tms = require(script.Parent.Modules.Teams)
+local mval = game.ReplicatedStorage.Values.Match
+local lbval = game.ReplicatedStorage.Values.Lockballs
+local Kits = require(game.ReplicatedStorage.Modules.Tms)
+
+local ekrany = workspace.Screens:GetChildren()
+
+local adm = {"2115xDeathZ2115"}
+
+local currentMatchUUID = ""
+local currentTime = 0
+local maxTime = 0
+local timerActive = false
+local currentHomeTeam = ""
+local currentAwayTeam = ""
+local currentHomeTeamId = ""
+local currentAwayTeamId = ""
+local currentHomeScore = 0
+local currentAwayScore = 0
+local currentPeriod = "Pierwsza połowa"
+local currentAddedTime = 0
+local elapsedAddedTime = 0
+local isBreak = false
+local breakTime = 0
+local timerLoopRunning = false
+local isAnimatingGoal = false 
+
+local stats = {
+	possessionA = 50, possessionB = 50,
+	shotsA = 0, shotsB = 0,
+	xgA = 0, xgB = 0,
+	bigChancesA = 0, bigChancesB = 0
+}
+local touchCounts = {home = 0, away = 0}
+
+local function forEachScreen(callback)
+	for _, ekran in ipairs(ekrany) do
+		if ekran and ekran:IsA("MeshPart") or ekran:IsA("Part") then
+			pcall(function()
+				callback(ekran)
+			end)
+		end
+	end
+end
+
+local function getOrCreateTeam(teamName, color)
+	local team = TeamsService:FindFirstChild(teamName)
+	if team then return team end
+
+	team = Instance.new("Team")
+	team.Name = teamName
+	team.AutoAssignable = false
+	team.TeamColor = color or BrickColor.Random()
+	team.Parent = TeamsService
+
+	return team
+end
+
+local function ensureObserversTeam()
+	local obs = TeamsService:FindFirstChild("Obserwatorzy")
+	if obs then return obs end
+
+	obs = Instance.new("Team")
+	obs.Name = "Obserwatorzy"
+	obs.AutoAssignable = false
+	obs.TeamColor = BrickColor.new("Institutional white")
+	obs.Parent = TeamsService
+
+	return obs
+end
+
+local function movePlayersToObservers(teamName)
+	local obs = ensureObserversTeam()
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr.Team and plr.Team.Name == teamName then
+			plr.Team = obs
+		end
+	end
+end
+
+local function removeTeam(teamName)
+	local team = TeamsService:FindFirstChild(teamName)
+	if team then
+		team:Destroy()
+	end
+end
+
+
+local function findPlayerByShortcut(shortcut)
+	if not shortcut or shortcut == "" then return nil end
+	shortcut = shortcut:lower()
+	for _, player in ipairs(Players:GetPlayers()) do
+		local playerNameLower = player.Name:lower()
+		if string.sub(playerNameLower, 1, #shortcut) == shortcut then
+			return player.Name
+		end
+	end
+	return nil
+end
+
+local function applyKit(model, shirtId, pantsId)
+	local wear = model:FindFirstChild("UBRANIE WEAR")
+	if not wear then return end
+	local ch = wear:FindFirstChild("Coathanger")
+	if not ch then return end
+	local shirt = ch:FindFirstChildOfClass("Shirt") or Instance.new("Shirt", ch)
+	local pants = ch:FindFirstChildOfClass("Pants") or Instance.new("Pants", ch)
+	shirt.ShirtTemplate = shirtId or ""
+	pants.PantsTemplate = pantsId or ""
+	local display = ch:FindFirstChild("WYSTAWA")
+	if display then
+		local dShirt = display:FindFirstChildOfClass("Shirt") or Instance.new("Shirt", display)
+		local dPants = display:FindFirstChildOfClass("Pants") or Instance.new("Pants", display)
+		dShirt.ShirtTemplate = shirtId or ""
+		dPants.PantsTemplate = pantsId or ""
+	end
+end
+
+local function hasPermission(plr)
+	if game.PrivateServerId ~= "" and plr.UserId == game.PrivateServerOwnerId then return true end
+	return table.find(adm, plr.Name) or (plr.Team and plr.Team.Name == "Sędziowie")
+end
+
+local function getTeam(query)
+	if not query or query == "" then return nil end
+	local upperQuery = query:upper()
+	if tms[upperQuery] then return upperQuery end
+	for abbr, data in pairs(tms) do
+		local name = data.fullName or data.fullname
+		if name and string.find(name:lower(), query:lower(), 1, true) then return abbr end
+	end
+	return nil
+end
+
+local function formatTime(seconds)
+	return string.format("%02d:%02d", math.floor(seconds / 60), seconds % 60)
+end
+
+local function sendToBackend(endpoint, data)
+	local success, result = pcall(function()
+		return HttpService:PostAsync(
+			BACKEND_URL .. endpoint, 
+			HttpService:JSONEncode(data), 
+			Enum.HttpContentType.ApplicationJson
+		)
+	end)
+	if not success then
+		warn("[BACKEND ERROR] " .. endpoint .. ": " .. tostring(result))
+	else
+		print("[BACKEND SUCCESS] " .. endpoint)
+	end
+	return success, result
+end
+
+local function updateScorersUI(team, playerName, minute)
+	forEachScreen(function(ekran)
+		local gui = ekran:FindFirstChild("SurfaceGui")
+		if not gui then return end
+
+		local frame = gui.Frame
+		local label = (team == "home") and frame:FindFirstChild("HomeScorers") or frame:FindFirstChild("AwayScorers")
+		if label then
+			local text = playerName .. " (" .. minute .. "')"
+			if label.Text == "" or label.Text == " " or label.Text:find("Scorers") then
+				label.Text = text
+			else
+				label.Text = label.Text .. "\n" .. text
+			end
+		end
+	end)
+end
+
+
+local function updateUITimer()
+	if isAnimatingGoal then return end
+
+	local addedMinutes = math.floor(currentAddedTime / 60)
+	local timerStr = isBreak and ("PRZERWA " .. formatTime(breakTime)) or formatTime(currentTime)
+
+	t:FireAllClients(currentTime, addedMinutes)
+
+	forEachScreen(function(ekran)
+		local gui = ekran:FindFirstChild("SurfaceGui")
+		if not gui then return end
+
+		gui.Enabled = true
+		local frame = gui.Frame
+		frame.Timer.Text = timerStr
+
+		local addedLabel = frame:FindFirstChild("Added")
+		if addedLabel then
+			if not isBreak and addedMinutes > 0 then
+				addedLabel.Text = "+" .. addedMinutes
+				addedLabel.Visible = true
+			else
+				addedLabel.Visible = false
+			end
+		end
+	end)
+end
+
+
+local function startTimerSync()
+	if timerLoopRunning then return end
+	timerLoopRunning = true
+	task.spawn(function()
+		while mval.Value == true do
+			task.wait(1)
+
+			if isBreak then
+				if breakTime > 0 then breakTime = breakTime - 1 end
+			elseif timerActive then
+				if currentTime < maxTime then
+					currentTime = currentTime + 1
+				elseif currentAddedTime > 0 then
+					elapsedAddedTime = elapsedAddedTime + 1
+				end
+			end
+
+			if currentMatchUUID ~= "" and (timerActive or isBreak or currentTime % 5 == 0) then
+				task.spawn(function()
+					local displayTimer = isBreak and ("PRZERWA " .. formatTime(breakTime)) or formatTime(currentTime)
+					sendToBackend("/api/match/sync", {
+						uuid = currentMatchUUID,
+						teamAName = currentHomeTeam, teamAScore = currentHomeScore,
+						teamBName = currentAwayTeam, teamBScore = currentAwayScore,
+						timer = displayTimer,
+						period = isBreak and "Przerwa" or currentPeriod,
+						addedTime = currentAddedTime, active = timerActive, stats = stats
+					})
+				end)
+			end
+			updateUITimer()
+		end
+		timerLoopRunning = false
+	end)
+end
+
+workspace.Balls.ChildAdded:Connect(function(ball)
+	if ball.Name == "Ball" then
+		ball.Touched:Connect(function(hit)
+			if not timerActive then return end
+			local plr = game.Players:GetPlayerFromCharacter(hit.Parent)
+			if plr and plr.Team then
+				if plr.Team.Name == currentHomeTeam then touchCounts.home = touchCounts.home + 1
+				elseif plr.Team.Name == currentAwayTeam then touchCounts.away = touchCounts.away + 1 end
+			end
+		end)
+	end
+end)
+
+local function handleSubstitution(teamSide, outPlayer, inPlayer)
+	local minute = math.floor(currentTime / 60)
+
+	-- backend team
+	local backendTeam = (teamSide == "home") and "A" or "B"
+
+	-- logo teamu
+	local teamId = (teamSide == "home") and currentHomeTeamId or currentAwayTeamId
+	local teamName = (teamSide == "home") and currentHomeTeam or currentAwayTeam
+	local kit = Kits[teamName]
+	local teamData = tms[teamId]
+
+	local teamLogo =
+		(kit and kit.Logo)
+		or (teamData and teamData.image_id and ("rbxassetid://" .. teamData.image_id))
+
+	-- backend
+	if currentMatchUUID ~= "" then
+		sendToBackend("/api/match/event", {
+			uuid = currentMatchUUID,
+			type = "substitution",
+			data = {
+				team = backendTeam,
+				out = outPlayer,
+				in_player = inPlayer,
+				minute = minute
+			}
+		})
+	end
+
+	-- UI
+	forEachScreen(function(ekran)
+		local gui = ekran:FindFirstChild("SurfaceGui")
+		local subsGui = ekran:FindFirstChild("Subs")
+		if not gui or not subsGui then return end
+
+		local subsText = subsGui:FindFirstChild("SubsText")
+		local frame = subsGui:FindFirstChild("ImageLabel"):FindFirstChild("Frame")
+		if not subsText or not frame then return end
+
+		local outImg = frame:FindFirstChild("Out")
+		local inImg = frame:FindFirstChild("In")
+		local logoImg = frame:FindFirstChild("TeamLogo")
+		if not outImg or not inImg or not logoImg then return end
+
+		local outId = Players:GetUserIdFromNameAsync(outPlayer)
+		local inId = Players:GetUserIdFromNameAsync(inPlayer)
+
+		outImg.Image = Players:GetUserThumbnailAsync(outId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420)
+		inImg.Image = Players:GetUserThumbnailAsync(inId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420)
+		if teamLogo then logoImg.Image = teamLogo end
+
+		subsText.Position = UDim2.new(-1.2, 0, 0, 0)
+		frame.Position = UDim2.new(-1.2, 0, 0, 0)
+
+		local prev = gui.Enabled
+		gui.Enabled = false
+		subsGui.Enabled = true
+
+		local inTween = TweenInfo.new(0.6, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+		local outTween = TweenInfo.new(0.5, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+
+		TweenService:Create(subsText, inTween, { Position = UDim2.new(0, 0, 0, 0) }):Play()
+		task.wait(3)
+		TweenService:Create(subsText, outTween, { Position = UDim2.new(1.2, 0, 0, 0) }):Play()
+		task.wait(0.6)
+
+		TweenService:Create(frame, inTween, { Position = UDim2.new(0, 0, 0, 0) }):Play()
+		task.wait(5)
+		TweenService:Create(frame, outTween, { Position = UDim2.new(1.2, 0, 0, 0) }):Play()
+		task.wait(0.6)
+
+		subsGui.Enabled = false
+		gui.Enabled = prev
+	end)
+end
+
+
+local function handleGoal(team, playerName, isPenalty)
+	-- Map 'home'/'away' to 'A'/'B' for backend
+	local backendTeam = (team == "home") and "A" or "B"
+
+	if team == "home" then
+		currentHomeScore = currentHomeScore + 1
+	else
+		currentAwayScore = currentAwayScore + 1
+	end
+
+	local minute = math.floor(currentTime / 60)
+
+	if currentMatchUUID ~= "" then
+		sendToBackend("/api/match/event", {
+			uuid = currentMatchUUID,
+			type = "goal",
+			data = {
+				team = backendTeam,
+				player = playerName,
+				minute = minute,
+				scoreA = currentHomeScore,
+				scoreB = currentAwayScore,
+				isPenalty = isPenalty
+			}
+		})
+	end
+
+	isAnimatingGoal = true 
+
+	forEachScreen(function(ekran)
+		local gui = ekran:FindFirstChild("SurfaceGui")
+		local goalGui = ekran:FindFirstChild("Goal")
+		if not gui or not goalGui then return end
+
+		local goalText = goalGui:FindFirstChild("GoalText")
+		local imageLabel = goalGui:FindFirstChild("ImageLabel")
+		if not goalText or not imageLabel then return end
+
+		local dataFrame = imageLabel:FindFirstChild("Frame")
+		if not dataFrame then return end
+
+		goalText.Position = UDim2.new(-1.2, 0, 0, 0)
+		dataFrame.Position = UDim2.new(-1.2, 0, 0, 0)
+
+		local frame = gui.Frame
+		frame.HomeScore.Text = tostring(currentHomeScore)
+		frame.AwayScore.Text = tostring(currentAwayScore)
+
+		local inner = dataFrame:FindFirstChild("Frame", true)
+		if inner then
+			local scoreFrame = inner:FindFirstChild("Frame")
+			if scoreFrame and scoreFrame:FindFirstChild("Frame") then
+				scoreFrame.Frame.HomeScore.Text = tostring(currentHomeScore)
+				scoreFrame.Frame.AwayScore.Text = tostring(currentAwayScore)
+			end
+		end
+
+		dataFrame.ScorerName.Text = playerName
+		local uid = Players:GetUserIdFromNameAsync(playerName)
+		dataFrame.ScorerImage.Image =
+			Players:GetUserThumbnailAsync(uid, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420)
+
+		local hTeamData = tms[currentHomeTeamId]
+		local aTeamData = tms[currentAwayTeamId]
+		local hKit = Kits[currentHomeTeam]
+		local aKit = Kits[currentAwayTeam]
+
+		local homeLogo = (hKit and hKit.Logo) or (hTeamData and hTeamData.image_id and "rbxassetid://" .. hTeamData.image_id)
+		local awayLogo = (aKit and aKit.Logo) or (aTeamData and aTeamData.image_id and "rbxassetid://" .. aTeamData.image_id)
+
+		if homeLogo then dataFrame.Frame.HomeLogo.Image = homeLogo end
+		if awayLogo then dataFrame.Frame.AwayLogo.Image = awayLogo end
+		dataFrame.TeamLogo.Image = (team == "home") and homeLogo or awayLogo
+
+		local prev = gui.Enabled
+		gui.Enabled = false
+		goalGui.Enabled = true
+
+		local inTweenInfo = TweenInfo.new(0.6, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+		local outTweenInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+
+		local goalIn = TweenService:Create(goalText, inTweenInfo, { Position = UDim2.new(0, 0, 0, 0) })
+		goalIn:Play()
+		goalIn.Completed:Wait()
+		task.wait(3)
+		local goalOut = TweenService:Create(goalText, outTweenInfo, { Position = UDim2.new(1.2, 0, 0, 0) })
+		goalOut:Play()
+		goalOut.Completed:Wait()
+
+		local frameIn = TweenService:Create(dataFrame, inTweenInfo, { Position = UDim2.new(0, 0, 0, 0) })
+		frameIn:Play()
+		frameIn.Completed:Wait()
+		task.wait(5)
+		local frameOut = TweenService:Create(dataFrame, outTweenInfo, { Position = UDim2.new(1.2, 0, 0, 0) })
+		frameOut:Play()
+		frameOut.Completed:Wait()
+
+		goalGui.Enabled = false
+		gui.Enabled = prev
+	end)
+
+	isAnimatingGoal = false
+	updateUITimer()
+	s:FireAllClients(currentHomeScore, currentAwayScore)
+	updateScorersUI(team, playerName, minute)
+end
+
+local function setPeriodGraphic(periodCommand)
+	local periodType = ""
+	local minute = math.floor(currentTime/60)
+
+	if periodCommand == ":time" then
+		periodType = "start"
+		minute = 0
+	elseif periodCommand == ":przerwa" then
+		periodType = "halftime"
+	elseif periodCommand == ":polowa 2" then
+		periodType = "secondhalf"
+	elseif periodCommand == ":endmatch" then
+		periodType = "end"
+	end
+
+	if periodType ~= "" and currentMatchUUID ~= "" then
+		sendToBackend("/api/match/event", {
+			uuid = currentMatchUUID,
+			type = "period",
+			data = { 
+				type = periodType,
+				minute = minute,
+				scoreA = currentHomeScore,
+				scoreB = currentAwayScore
+			}
+		})
+	end
+end
+
+game.Players.PlayerAdded:Connect(function(plr)
+	plr.Chatted:Connect(function(msg)
+		local args = string.split(msg, " ")
+		local command = args[1]:lower()
+		local a1, a2, a3, a4 = args[2], args[3], args[4], args[5]
+
+		if command == ":pb" then
+			local pf = workspace.Balls:FindFirstChild(plr.Name) or Instance.new("Folder", workspace.Balls)
+			pf.Name = plr.Name
+			if pf:FindFirstChild("Ball") then pf.Ball:Destroy() end
+			local ball = game.ServerStorage.Ball:Clone()
+			ball.Parent = pf
+			ball.Position = plr.Character.HumanoidRootPart.Position
+
+		elseif command == ":startmatch" then
+			if not hasPermission(plr) then return end
+
+			local t1 = getTeam(a1)
+			local t2 = getTeam(a2)
+			if not (t1 and t2) then return end
+
+			local d1, d2 = tms[t1], tms[t2]
+
+			currentHomeTeam = d1.fullName or d1.fullname or t1
+			currentAwayTeam = d2.fullName or d2.fullname or t2
+			local homeTeamObj = getOrCreateTeam(currentHomeTeam, BrickColor.new("Bright red"))
+			local awayTeamObj = getOrCreateTeam(currentAwayTeam, BrickColor.new("Bright blue"))
+			ensureObserversTeam()
+			currentHomeTeamId = t1
+			currentAwayTeamId = t2
+
+			currentHomeScore = 0
+			currentAwayScore = 0
+			currentTime = 0
+			timerActive = false
+			isBreak = false
+			currentAddedTime = 0
+			elapsedAddedTime = 0
+			currentPeriod = "Pierwsza połowa"
+			touchCounts = { home = 0, away = 0 }
+
+			-- 🧥 KITS
+			local hKit = Kits[currentHomeTeam]
+			local aKit = Kits[currentAwayTeam]
+
+			if hKit then
+				for i = 1, 18 do
+					local m = workspace.StrojeHome:FindFirstChild(tostring(i))
+					if m then
+						applyKit(
+							m,
+							i == 3 and hKit.GkKit or hKit.HomeKit,
+							i == 3 and hKit.GkShorts or hKit.HomeShorts
+						)
+					end
+				end
+			end
+
+			if aKit then
+				for i = 1, 18 do
+					local m = workspace.StrojeAway:FindFirstChild(tostring(i))
+					if m then
+						applyKit(
+							m,
+							i == 3 and aKit.GkKit or aKit.AwayKit,
+							i == 3 and aKit.GkShorts or aKit.AwayShorts
+						)
+					end
+				end
+			end
+
+			-- 📡 CLIENT UI
+			sm:FireAllClients(
+				t1,
+				t2,
+				d1.h_pos,
+				d2.a_pos,
+				d1.image_id,
+				d2.image_id
+			)
+
+			-- 🖥️ WSZYSTKIE EKRANY
+			forEachScreen(function(ekran)
+				local gui = ekran:FindFirstChild("SurfaceGui")
+				if not gui then return end
+
+				gui.Enabled = true
+				local f = gui.Frame
+
+				f.HomeName.Text = currentHomeTeam:upper()
+				f.AwayName.Text = currentAwayTeam:upper()
+				f.HomeScore.Text = "0"
+				f.AwayScore.Text = "0"
+				f.Timer.Text = "00:00"
+
+				if f:FindFirstChild("Added") then
+					f.Added.Visible = false
+				end
+				if f:FindFirstChild("HomeScorers") then
+					f.HomeScorers.Text = ""
+				end
+				if f:FindFirstChild("AwayScorers") then
+					f.AwayScorers.Text = ""
+				end
+
+				local hLogo =
+					(hKit and hKit.Logo)
+					or (d1.image_id and ("rbxassetid://" .. d1.image_id))
+
+				local aLogo =
+					(aKit and aKit.Logo)
+					or (d2.image_id and ("rbxassetid://" .. d2.image_id))
+
+				if hLogo then f.HomeLogo.Image = hLogo end
+				if aLogo then f.AwayLogo.Image = aLogo end
+			end)
+
+			mval.Value = true
+			startTimerSync()
+
+			task.spawn(function()
+				local ok, res = sendToBackend("/api/match/start", {
+					teamA = currentHomeTeam,
+					teamB = currentAwayTeam
+				})
+
+				if not ok then return end
+
+				local decoded = HttpService:JSONDecode(res)
+				if not decoded or not decoded.uuid then return end
+
+				currentMatchUUID = decoded.uuid
+				print("[BACKEND] Match UUID:", currentMatchUUID)
+
+				local homeStarters = {}
+				local awayStarters = {}
+
+				for _, p in ipairs(Players:GetPlayers()) do
+					if p.Team then
+						if p.Team.Name == currentHomeTeam then
+							table.insert(homeStarters, p.Name)
+						elseif p.Team.Name == currentAwayTeam then
+							table.insert(awayStarters, p.Name)
+						end
+					end
+				end
+
+				if #homeStarters > 0 then
+					sendToBackend("/api/match/lineup", {
+						uuid = currentMatchUUID,
+						team = "A",
+						starters = homeStarters,
+						bench = {}
+					})
+				end
+
+				if #awayStarters > 0 then
+					sendToBackend("/api/match/lineup", {
+						uuid = currentMatchUUID,
+						team = "B",
+						starters = awayStarters,
+						bench = {}
+					})
+				end
+			end)
+
+
+		elseif command == ":score" then
+			if not hasPermission(plr) then return end
+			local team = (a1 == "home" or a1 == "1") and "home" or (a1 == "away" or a1 == "2") and "away" or nil
+
+			if team and a2 then
+				local nick = findPlayerByShortcut(a2)
+				if nick then handleGoal(team, nick, a3 == "penalty") end
+			else
+				currentHomeScore, currentAwayScore = tonumber(a1) or 0, tonumber(a2) or 0
+				pcall(function()
+					local f = workspace.Ekran.SurfaceGui.Frame
+					f.HomeScore.Text = tostring(currentHomeScore)
+					f.AwayScore.Text = tostring(currentAwayScore)
+				end)
+				s:FireAllClients(currentHomeScore, currentAwayScore)
+				sendToBackend("/api/match/update", {uuid = currentMatchUUID, teamAScore = currentHomeScore, teamBScore = currentAwayScore})
+			end
+
+		elseif command == ":goal" then
+			if not hasPermission(plr) then return end
+			local team = (a1 == "home" or a1 == "1") and "home" or (a1 == "away" or a1 == "2") and "away" or nil
+
+			if team and a2 then
+				local nick = findPlayerByShortcut(a2)
+				if nick then handleGoal(team, nick, a3 == "penalty") end
+			end
+
+		elseif command == ":ungoal" then
+			if not hasPermission(plr) then return end
+			local team = (a1 == "home" or a1 == "1") and "home" or (a1 == "away" or a1 == "2") and "away" or nil
+			if not team then return end
+			if team == "home" and currentHomeScore > 0 then currentHomeScore -= 1
+			elseif team == "away" and currentAwayScore > 0 then currentAwayScore -= 1 end
+			pcall(function()
+				local f = workspace.Ekran.SurfaceGui.Frame
+				f.HomeScore.Text = tostring(currentHomeScore)
+				f.AwayScore.Text = tostring(currentAwayScore)
+				local label = (team == "home") and f:FindFirstChild("HomeScorers") or f:FindFirstChild("AwayScorers")
+				if label and label.Text ~= "" then
+					local lines = string.split(label.Text, "\n")
+					table.remove(lines, #lines)
+					label.Text = table.concat(lines, "\n")
+				end
+			end)
+			s:FireAllClients(currentHomeScore, currentAwayScore)
+			sendToBackend("/api/match/update", {uuid = currentMatchUUID, teamAScore = currentHomeScore, teamBScore = currentAwayScore})
+
+		elseif command == ":yellow" or command == ":red" then
+			if not hasPermission(plr) then return end
+			if a2 then
+				local nick = findPlayerByShortcut(a2)
+				if nick then
+					local teamArg = (a1 == "home" or a1 == "1") and "A" or (a1 == "away" or a1 == "2") and "B" or "A"
+					sendToBackend("/api/match/event", {
+						uuid = currentMatchUUID,
+						type = (command == ":yellow" and "yellow_card" or "red_card"),
+						data = { team = teamArg, player = nick, minute = math.floor(currentTime/60) }
+					})
+				end
+			end
+
+		elseif command == ":zmiana" then
+			if not hasPermission(plr) then return end
+			if not (a1 and a2 and a3) then return end
+
+			local outP = findPlayerByShortcut(a2)
+			local inP = findPlayerByShortcut(a3)
+			if not (outP and inP) then return end
+
+			local outPlayer = Players:FindFirstChild(outP)
+			local inPlayer = Players:FindFirstChild(inP)
+			if not (outPlayer and inPlayer) then return end
+
+			if not outPlayer.Team or not inPlayer.Team then return end
+			if outPlayer.Team ~= inPlayer.Team then
+				warn("Zmiana odrzucona: zawodnicy nie są w tym samym zespole")
+				return
+			end
+
+			local teamSide
+			if outPlayer.Team.Name == currentHomeTeam then
+				teamSide = "home"
+			elseif outPlayer.Team.Name == currentAwayTeam then
+				teamSide = "away"
+			else
+				return
+			end
+
+			handleSubstitution(teamSide, outP, inP)
+
+
+		elseif command == ":time" then
+			if not hasPermission(plr) then return end
+			maxTime = (currentPeriod == "Pierwsza połowa") and 20 * 60 or 40 * 60
+			if currentPeriod == "Pierwsza połowa" then currentTime = 0 end
+			timerActive = true
+			setPeriodGraphic(":time")
+			updateUITimer()
+			if not timerLoopRunning then startTimerSync() end
+
+		elseif command == ":addtime" then
+			if not hasPermission(plr) then return end
+			currentAddedTime = (tonumber(a1) or 0) * 60
+			updateUITimer()
+
+		elseif command == ":przerwa" then
+			if not hasPermission(plr) then return end
+			timerActive, isBreak, breakTime = false, true, 15 * 60
+			setPeriodGraphic(":przerwa")
+			updateUITimer()
+
+		elseif command == ":wznow" then
+			if not hasPermission(plr) then return end
+			isBreak, timerActive = false, true
+			updateUITimer()
+
+		elseif command == ":polowa" or command == ":period" then
+			if not hasPermission(plr) then return end
+			if a1 == "1" then 
+				currentPeriod, maxTime = "Pierwsza połowa", 20 * 60
+			elseif a1 == "2" then 
+				currentPeriod, maxTime = "Druga połowa", 40 * 60 
+				setPeriodGraphic(":polowa 2") 
+			end
+			updateUITimer()
+
+		elseif command == ":endmatch" then
+			if not hasPermission(plr) then return end
+			setPeriodGraphic(":endmatch")
+			em:FireAllClients()
+			uie:FireAllClients("Match", false)
+
+			task.wait(5)
+			sendToBackend("/api/match/end", { 
+				uuid = currentMatchUUID, 
+				matchId = "m1", 
+				teamAScore = currentHomeScore, 
+				teamBScore = currentAwayScore, 
+				homeTeamId = currentHomeTeamId, 
+				awayTeamId = currentAwayTeamId 
+			})
+			currentMatchUUID, mval.Value, timerActive = "", false, false
+			movePlayersToObservers(currentHomeTeam)
+			movePlayersToObservers(currentAwayTeam)
+
+			removeTeam(currentHomeTeam)
+			removeTeam(currentAwayTeam)
+			forEachScreen(function(ekran)
+				local gui = ekran:FindFirstChild("SurfaceGui")
+				if gui then
+					gui.Enabled = false
+				end
+			end)
+
+		end
+	end)
+end)
